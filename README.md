@@ -6,23 +6,11 @@ Omastonk is a multi-instance market widget for the Omarchy bar. It shows a selec
 
 ## Install
 
-Install Omastonk disabled so you can review it before it runs:
-
 ```bash
-omarchy plugin add https://github.com/brianblakely/omastonk.git --no-enable
+omarchy plugin add https://github.com/brianblakely/omastonk.git
 ```
 
-Review the installed checkout:
-
-```bash
-omarchy plugin edit b.omastonk
-```
-
-Then enable the first instance in the right bar section:
-
-```bash
-omarchy plugin enable b.omastonk --section right
-```
+Accept the prompt to enable Omastonk. Omarchy places the first instance in the right bar section by default.
 
 Add another instance with an explicit placement:
 
@@ -42,7 +30,7 @@ Omastonk runs `curl` against `query1.finance.yahoo.com`. Quotes refresh every mi
 
 Each instance writes its symbol and generated `instanceId` to its own bar-layout entry in `~/.config/omarchy/shell.json`. It does not write other files.
 
-Plugins run unsandboxed inside `omarchy-shell`; review the checkout before enabling it.
+Plugins run unsandboxed inside `omarchy-shell`; review the source before installing it.
 
 ## Update
 
