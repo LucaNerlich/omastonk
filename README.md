@@ -24,20 +24,8 @@ Omastonk starts without a symbol. Click it to choose a symbol and open its chart
 
 Each instance keeps its own symbol, so multiple widgets can track different markets.
 
-## Network and storage
-
-Omastonk runs `curl` against `query1.finance.yahoo.com`. Quotes refresh every minute and charts load on demand.
-
-Each instance writes its symbol and generated `instanceId` to its own bar-layout entry in `~/.config/omarchy/shell.json`. It does not write other files.
-
-Plugins run unsandboxed inside `omarchy-shell`; review the source before installing it.
-
 ## Update
 
 ```bash
 omarchy plugin update b.omastonk
 ```
-
-## License
-
-[MIT](LICENSE)
