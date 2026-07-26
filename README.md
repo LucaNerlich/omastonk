@@ -10,8 +10,6 @@ Omastonk is a multi-instance market widget for the Omarchy bar. It shows a selec
 omarchy plugin add https://github.com/brianblakely/omastonk.git
 ```
 
-Accept the prompt to enable Omastonk. Omarchy places the first instance in the right bar section by default.
-
 Add another instance with an explicit placement:
 
 ```bash
