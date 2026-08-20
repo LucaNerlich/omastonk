@@ -28,7 +28,10 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq qt6-declarative-dev-tools
+          sudo apt-get install -y jq qt6-declarative-dev-tools \
+            qml6-module-qtquick qml6-module-qtquick-window \
+            qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+            qml6-module-qtquick-shapes
 
       - name: Validate manifest (omarchy plugin validate)
         run: scripts/validate-plugin.sh
