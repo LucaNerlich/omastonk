@@ -168,6 +168,7 @@ Panel {
   }
 
   function submit() {
+    addDraftSymbol(addField.text)
     var next = normalizeSymbols(draftSymbols)
     if (host && host.setSymbols) host.setSymbols(next)
     else draftSymbols = next
