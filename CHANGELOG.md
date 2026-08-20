@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `luca.omastonk-X.Y.Z.tar.gz`, and publishes the GitHub Release with the
   changelog section as release notes.
 
+### Fixed
+
+- Editor: Save now commits text still sitting in the add field, so
+  type-a-symbol-and-hit-Save no longer discards it.
+
 ### Changed
 
 - Rebranded from `b.omastonk` to `luca.omastonk` (new plugin id, author,
