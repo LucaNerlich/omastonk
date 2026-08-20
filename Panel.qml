@@ -5,14 +5,15 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "b.omastonk"
+  moduleName: "luca.omastonk"
   manageIpc: false
 
   property var anchorItem: null
   property var host: null
-  property string draftSymbol: ""
+  property var draftSymbols: []
   property bool editing: true
   property int intervalIndex: 6
+  property string activeSymbol: ""
   property var chartPoints: []
   property string chartStatus: "idle"
   property string chartOutput: ""
@@ -23,7 +24,8 @@ Panel {
   readonly property bool intervalDown: chartPoints.length > 1 && chartPoints[chartPoints.length - 1] < chartPoints[0]
   readonly property color chartColor: intervalDown ? Color.bar.active : Color.bar.text
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property string symbol: host ? host.symbol : normalizeSymbol(setting("symbol", ""))
+  readonly property var symbols: host ? host.symbols : settingsSymbols()
+  readonly property int activeIndex: symbols.indexOf(activeSymbol)
   readonly property real intervalPriceChange: chartPoints.length > 1 ? chartPoints[chartPoints.length - 1] - chartPoints[0] : NaN
   readonly property real intervalPercentChange: chartPoints.length > 1 && chartPoints[0] !== 0 ? intervalPriceChange / chartPoints[0] * 100 : NaN
   readonly property var intervalOptions: [
@@ -35,7 +37,7 @@ Panel {
     { label: "5D", range: "5d", interval: "15m" },
     { label: "1D", range: "1d", interval: "5m" }
   ]
-  readonly property int chartPanelWidth: Math.ceil(Math.max(intervalSizer.implicitWidth, changeSizer.implicitWidth + Style.space(88)) + Style.space(28))
+  readonly property int chartPanelWidth: Math.ceil(Math.max(intervalSizer.implicitWidth, tabSizer.implicitWidth, changeSizer.implicitWidth + Style.space(88)) + Style.space(28))
   readonly property var selectedInterval: intervalOptions[Math.max(0, Math.min(intervalIndex, intervalOptions.length - 1))]
   readonly property string selectedIntervalLabel: selectedInterval ? selectedInterval.label : "1D"
   readonly property string chartStatusText: chartStatus === "loading" ? "Loading" : (chartStatus === "error" ? "No data" : "")
@@ -45,6 +47,25 @@ Panel {
 
   function normalizeSymbol(value) {
     return String(value || "").trim().toUpperCase().replace(/\s+/g, "")
+  }
+
+  function settingsSymbols() {
+    var raw = setting("symbols")
+    if (Array.isArray(raw)) return normalizeSymbols(raw)
+    var legacy = normalizeSymbol(setting("symbol", ""))
+    return legacy === "" ? [] : [legacy]
+  }
+
+  function normalizeSymbols(list) {
+    var seen = {}
+    var result = []
+    for (var i = 0; i < list.length; i++) {
+      var value = normalizeSymbol(list[i])
+      if (value === "" || seen[value]) continue
+      seen[value] = true
+      result.push(value)
+    }
+    return result
   }
 
   function numericValue(value) {
@@ -84,23 +105,24 @@ Panel {
   }
 
   function chartKey() {
-    return symbol + "|" + selectedIntervalLabel
+    return activeSymbol + "|" + selectedIntervalLabel
   }
 
   function chartUrl() {
     var option = selectedInterval || intervalOptions[0]
     return "https://query1.finance.yahoo.com/v8/finance/chart/"
-      + encodeURIComponent(symbol)
+      + encodeURIComponent(activeSymbol)
       + "?range=" + encodeURIComponent(option.range)
       + "&interval=" + encodeURIComponent(option.interval)
   }
 
-  function open() {
-    draftSymbol = symbol
-    editing = symbol === ""
+  function openSymbol(symbol) {
+    var next = normalizeSymbol(symbol)
+    if (next !== "" && symbols.indexOf(next) !== -1) activeSymbol = next
+    editing = symbols.length === 0
     root.controller.show()
     Qt.callLater(function() {
-      if (root.editing) focusSymbolField()
+      if (root.editing) focusAddField()
       else {
         keyCatcher.forceActiveFocus()
         refreshChart(true)
@@ -108,54 +130,57 @@ Panel {
     })
   }
 
+  function open() {
+    var next = symbols.indexOf(activeSymbol) !== -1 ? activeSymbol : (symbols.length > 0 ? symbols[0] : "")
+    openSymbol(next)
+  }
+
   function toggle() {
     if (root.opened) root.close()
     else root.open()
   }
 
-  function focusSymbolField() {
-    if (!symbolField) return
-    symbolField.forceActiveFocus()
-    symbolField.selectAll()
+  function focusAddField() {
+    if (!addField) return
+    addField.forceActiveFocus()
+    addField.selectAll()
   }
 
-  function editSymbol() {
-    draftSymbol = symbol
+  function editSymbols() {
+    draftSymbols = symbols.slice()
     editing = true
-    Qt.callLater(focusSymbolField)
+    Qt.callLater(focusAddField)
   }
 
   function openEditor() {
-    draftSymbol = symbol
-    editing = true
+    editSymbols()
     root.controller.show()
-    Qt.callLater(focusSymbolField)
   }
 
   function cancelEdit() {
-    if (symbol === "") {
+    if (symbols.length === 0) {
       root.close()
       return
     }
 
-    draftSymbol = symbol
     editing = false
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function submit() {
-    var next = normalizeSymbol(draftSymbol)
-    draftSymbol = next
-    if (host && host.setSymbol) host.setSymbol(next)
+    var next = normalizeSymbols(draftSymbols)
+    if (host && host.setSymbols) host.setSymbols(next)
+    else draftSymbols = next
 
-    if (next === "") {
+    if (next.length === 0) {
       chartPoints = []
       chartStatus = "idle"
       editing = true
-      Qt.callLater(focusSymbolField)
+      Qt.callLater(focusAddField)
       return
     }
 
+    if (next.indexOf(activeSymbol) === -1) activeSymbol = next[0]
     editing = false
     Qt.callLater(function() {
       keyCatcher.forceActiveFocus()
@@ -163,13 +188,39 @@ Panel {
     })
   }
 
-  function clear() {
-    draftSymbol = ""
-    if (host && host.setSymbol) host.setSymbol("")
-    chartPoints = []
-    chartStatus = "idle"
-    editing = true
-    Qt.callLater(focusSymbolField)
+  function addDraftSymbol(value) {
+    var parts = String(value || "").trim().toUpperCase().split(/\s+/)
+    for (var i = 0; i < parts.length; i++) {
+      var next = normalizeSymbol(parts[i])
+      if (next === "" || draftSymbols.indexOf(next) !== -1) continue
+      draftSymbols = draftSymbols.concat([next])
+    }
+    addField.text = ""
+    addField.forceActiveFocus()
+  }
+
+  function removeDraftSymbol(index) {
+    if (index < 0 || index >= draftSymbols.length) return
+    var next = []
+    for (var i = 0; i < draftSymbols.length; i++) {
+      if (i !== index) next.push(draftSymbols[i])
+    }
+    draftSymbols = next
+  }
+
+  function selectSymbol(index) {
+    if (symbols.length === 0) return
+    var next = ((index % symbols.length) + symbols.length) % symbols.length
+    if (symbols[next] === activeSymbol) return
+    activeSymbol = symbols[next]
+    if (host && host.setActiveSymbol) host.setActiveSymbol(activeSymbol)
+    refreshChart(true)
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function moveSymbol(delta) {
+    if (activeIndex === -1) return
+    selectSymbol(activeIndex + delta)
   }
 
   function selectInterval(index) {
@@ -185,7 +236,7 @@ Panel {
   }
 
   function refreshChart(force) {
-    if (editing || symbol === "" || chartProc.running) return
+    if (editing || activeSymbol === "" || chartProc.running) return
     if (!force && chartStatus === "ready" && requestedChartKey === chartKey()) return
 
     chartPoints = []
@@ -227,11 +278,21 @@ Panel {
     }
   }
 
-  onSymbolChanged: {
-    draftSymbol = symbol
-    if (!opened) return
-    editing = symbol === ""
-    if (symbol !== "") Qt.callLater(function() { refreshChart(true) })
+  onHostChanged: {
+    if (host && symbols.length > 0 && symbols.indexOf(activeSymbol) === -1) activeSymbol = symbols[0]
+  }
+
+  onSymbolsChanged: {
+    if (symbols.indexOf(activeSymbol) === -1) {
+      activeSymbol = symbols.length > 0 ? symbols[0] : ""
+    }
+    if (opened && !editing && activeSymbol !== "") Qt.callLater(function() { refreshChart(true) })
+  }
+
+  onActiveSymbolChanged: {
+    chartPoints = []
+    chartStatus = "idle"
+    if (opened && !editing && activeSymbol !== "") Qt.callLater(function() { refreshChart(true) })
   }
 
   onChartPointsChanged: chartCanvas.requestPaint()
@@ -247,7 +308,7 @@ Panel {
     onExited: function(exitCode) {
       if (root.requestedChartKey !== root.chartKey()) {
         root.chartOutput = ""
-        if (root.opened && !root.editing && root.symbol !== "") Qt.callLater(function() { root.refreshChart(true) })
+        if (root.opened && !root.editing && root.activeSymbol !== "") Qt.callLater(function() { root.refreshChart(true) })
         return
       }
 
@@ -277,6 +338,26 @@ Panel {
     }
   }
 
+  Row {
+    id: tabSizer
+    opacity: 0
+    height: 0
+    enabled: false
+    spacing: Style.space(6)
+
+    Repeater {
+      model: root.symbols
+
+      Button {
+        required property var modelData
+        text: modelData
+        selected: true
+        horizontalPadding: Style.space(8)
+        verticalPadding: Style.space(5)
+      }
+    }
+  }
+
   Text {
     id: changeSizer
     opacity: 0
@@ -293,8 +374,8 @@ Panel {
     owner: root.host || root
     bar: root.bar
     open: root.opened
-    focusTarget: root.editing ? symbolField : keyCatcher
-    contentWidth: symbolPanel.fittedContentWidth(root.editing ? Style.space(280) : root.chartPanelWidth)
+    focusTarget: root.editing ? addField : keyCatcher
+    contentWidth: symbolPanel.fittedContentWidth(root.editing ? Style.space(300) : root.chartPanelWidth)
     contentHeight: symbolPanel.fittedContentHeight(root.editing ? editorColumn.implicitHeight : chartColumn.implicitHeight)
 
     PanelKeyCatcher {
@@ -304,6 +385,8 @@ Panel {
       onMoveRequested: function(dx, dy) {
         if (dx < 0) root.moveInterval(-1)
         else if (dx > 0) root.moveInterval(1)
+        else if (dy < 0) root.moveSymbol(-1)
+        else if (dy > 0) root.moveSymbol(1)
       }
       onCloseRequested: root.close()
 
@@ -323,7 +406,7 @@ Panel {
             id: symbolTitle
             width: Math.min(implicitWidth, Math.max(1, parent.width - priceLabel.implicitWidth - parent.spacing))
             height: parent.height
-            text: root.symbol
+            text: root.activeSymbol
             color: root.chartColor
             font.family: root.fontFamily
             font.pixelSize: Style.font.title
@@ -427,6 +510,30 @@ Panel {
         }
 
         Row {
+          id: symbolRow
+          width: parent.width
+          visible: root.symbols.length > 1
+          spacing: Style.space(6)
+
+          Repeater {
+            model: root.symbols
+
+            Button {
+              required property var modelData
+              required property int index
+
+              text: modelData
+              selected: index === root.activeIndex
+              foreground: index === root.activeIndex ? root.chartColor : root.dim
+              accent: root.chartColor
+              horizontalPadding: Style.space(8)
+              verticalPadding: Style.space(5)
+              onClicked: root.selectSymbol(index)
+            }
+          }
+        }
+
+        Row {
           id: intervalRow
           width: parent.width
           spacing: Style.space(6)
@@ -458,7 +565,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "Symbol"
+          text: "Symbols"
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.title
@@ -466,20 +573,67 @@ Panel {
           elide: Text.ElideRight
         }
 
-        TextField {
-          id: symbolField
+        Column {
+          id: symbolList
           width: parent.width
-          text: root.draftSymbol
-          placeholderText: "SPY"
+          visible: root.draftSymbols.length > 0
+          spacing: Style.space(8)
+
+          Repeater {
+            model: root.draftSymbols
+
+            Row {
+              required property var modelData
+              required property int index
+
+              width: parent.width
+              spacing: Style.space(8)
+
+              TextField {
+                width: parent.width - removeButton.implicitWidth - parent.spacing
+                text: modelData
+                foreground: root.foreground
+                onTextChanged: {
+                  var next = root.normalizeSymbol(text)
+                  if (root.draftSymbols[index] !== next) root.draftSymbols[index] = next
+                }
+                Keys.onEscapePressed: root.cancelEdit()
+              }
+
+              Button {
+                id: removeButton
+                text: "\u2715"
+                tooltipText: "Remove " + modelData
+                foreground: root.dim
+                accent: root.dim
+                horizontalPadding: Style.space(8)
+                verticalPadding: Style.space(5)
+                onClicked: root.removeDraftSymbol(index)
+              }
+            }
+          }
+        }
+
+        TextField {
+          id: addField
+          width: parent.width
+          text: ""
+          placeholderText: "AAPL SPY BTC-USD"
           foreground: root.foreground
-          onTextChanged: root.draftSymbol = root.normalizeSymbol(text)
-          onAccepted: root.submit()
+          onAccepted: root.addDraftSymbol(text)
           Keys.onEscapePressed: root.cancelEdit()
         }
 
         Row {
           width: parent.width
           spacing: Style.space(8)
+
+          Button {
+            text: "Add"
+            foreground: root.foreground
+            accent: Color.accent
+            onClicked: root.addDraftSymbol(addField.text)
+          }
 
           Button {
             text: "Save"

@@ -5,24 +5,50 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "b.omastonk"
+  moduleName: "luca.omastonk"
 
-  property real quotePrice: NaN
-  property real quoteChange: 0
-  property string quoteStatus: "idle"
-  property string quoteOutput: ""
+  property var quotes: ({})
+  property int pollIndex: 0
   property string requestedSymbol: ""
   property string transientInstanceId: ""
+  property string displaySymbol: ""
+  property bool displaySymbolResolved: false
 
-  readonly property string symbol: normalizeSymbol(setting("symbol", ""))
+  readonly property string symbolLegacy: normalizeSymbol(setting("symbol", ""))
+  readonly property var symbols: normalizeSymbols(settingsSymbols())
+  readonly property string savedActive: normalizeSymbol(setting("activeSymbol", ""))
+  readonly property int rotateSeconds: clampRotateSeconds(Number(setting("rotateSeconds", 5)))
   readonly property string instanceId: String(setting("instanceId", "")) || transientInstanceId
-  readonly property bool quoteReady: quoteStatus === "ready" && isFinite(quotePrice)
-  readonly property bool priceDown: quoteReady && quoteChange < 0
-  readonly property color quoteColor: priceDown ? Color.bar.active : Color.bar.text
+  readonly property var activeQuote: quotes[displaySymbol] || null
+  readonly property bool quoteReady: activeQuote !== null && activeQuote.status === "ready" && isFinite(activeQuote.price)
+  readonly property bool priceDown: quoteReady && activeQuote.change < 0
   readonly property string trendGlyph: quoteReady ? (priceDown ? "\u25BC" : "\u25B2") : ""
-  readonly property string priceText: quoteReady ? formatPrice(quotePrice) : (quoteStatus === "loading" ? "..." : "?")
-  readonly property string labelText: symbol === "" ? "$" : symbol + " " + priceText + (trendGlyph === "" ? "" : " " + trendGlyph)
+  readonly property string priceText: quoteReady ? formatPrice(activeQuote.price) : (activeQuote !== null && activeQuote.status === "loading" ? "..." : "?")
+  readonly property string labelText: displaySymbol === "" ? "$" : displaySymbol + " " + priceText + (trendGlyph === "" ? "" : " " + trendGlyph)
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+
+  function settingsSymbols() {
+    var raw = setting("symbols")
+    if (Array.isArray(raw)) return raw
+    return symbolLegacy === "" ? [] : [symbolLegacy]
+  }
+
+  function normalizeSymbols(list) {
+    var seen = {}
+    var result = []
+    for (var i = 0; i < list.length; i++) {
+      var value = normalizeSymbol(list[i])
+      if (value === "" || seen[value]) continue
+      seen[value] = true
+      result.push(value)
+    }
+    return result
+  }
+
+  function clampRotateSeconds(value) {
+    if (!isFinite(value) || value <= 0) return 0
+    return Math.min(Math.round(value), 3600)
+  }
 
   function normalizeSymbol(value) {
     return String(value || "").trim().toUpperCase().replace(/\s+/g, "")
@@ -48,33 +74,44 @@ BarWidget {
       + "-" + Math.floor(Math.random() * 0x100000000).toString(36)
   }
 
-  function quoteUrl() {
+  function quoteUrl(symbol) {
     return "https://query1.finance.yahoo.com/v8/finance/chart/"
       + encodeURIComponent(symbol)
       + "?range=1d&interval=1m"
   }
 
-  function resetQuote() {
-    quotePrice = NaN
-    quoteChange = 0
-    quoteStatus = symbol === "" ? "idle" : "loading"
-    quoteOutput = ""
+  function updateQuote(symbol, entry) {
+    var next = {}
+    for (var key in quotes) next[key] = quotes[key]
+    next[symbol] = entry
+    quotes = next
   }
 
-  function refresh() {
+  function resetQuoteFor(symbol) {
+    if (symbol === "") return
+    updateQuote(symbol, { price: NaN, change: 0, status: "loading" })
+  }
+
+  function requestQuote(symbol) {
     if (symbol === "" || quoteProc.running) return
 
-    quoteOutput = ""
+    resetQuoteFor(symbol)
     requestedSymbol = symbol
-    quoteStatus = "loading"
-    quoteProc.command = ["curl", "-fsS", "--max-time", "6", "-A", "Mozilla/5.0", quoteUrl()]
+    quoteProc.command = ["curl", "-fsS", "--max-time", "6", "-A", "Mozilla/5.0", quoteUrl(symbol)]
     quoteProc.running = true
   }
 
+  function pollNext() {
+    if (symbols.length === 0) return
+    pollIndex = (pollIndex + 1) % symbols.length
+    requestQuote(symbols[pollIndex])
+  }
+
   function applyQuote(raw) {
+    var symbol = requestedSymbol
     var text = String(raw || "").trim()
-    if (text === "") {
-      quoteStatus = "error"
+    if (symbol === "" || text === "") {
+      if (symbol !== "") updateQuote(symbol, { price: NaN, change: 0, status: "error" })
       return
     }
 
@@ -82,7 +119,7 @@ BarWidget {
       var parsed = JSON.parse(text)
       var chart = parsed && parsed.chart ? parsed.chart : null
       if (chart && chart.error) {
-        quoteStatus = "error"
+        updateQuote(symbol, { price: NaN, change: 0, status: "error" })
         return
       }
 
@@ -92,15 +129,13 @@ BarWidget {
       var previous = numericValue(meta ? meta.chartPreviousClose : NaN)
       if (!isFinite(previous)) previous = numericValue(meta ? meta.previousClose : NaN)
       if (!isFinite(price)) {
-        quoteStatus = "error"
+        updateQuote(symbol, { price: NaN, change: 0, status: "error" })
         return
       }
 
-      quotePrice = price
-      quoteChange = isFinite(previous) ? price - previous : 0
-      quoteStatus = "ready"
+      updateQuote(symbol, { price: price, change: isFinite(previous) ? price - previous : 0, status: "ready" })
     } catch (e) {
-      quoteStatus = "error"
+      updateQuote(symbol, { price: NaN, change: 0, status: "error" })
     }
   }
 
@@ -226,17 +261,40 @@ BarWidget {
     })
   }
 
-  function setSymbol(value) {
-    var nextSymbol = normalizeSymbol(value)
-    if (nextSymbol === symbol) return
-
+  function settingsCopy() {
     var next = {}
     for (var key in settings) {
-      if (key !== "id") next[key] = settings[key]
+      if (key !== "id" && key !== "symbol") next[key] = settings[key]
     }
+    return next
+  }
+
+  function setSymbols(values) {
+    var nextSymbols = normalizeSymbols(values)
+    var next = settingsCopy()
     next.instanceId = instanceId || generateInstanceId()
-    next.symbol = nextSymbol
+    next.symbols = nextSymbols
+    if (nextSymbols.indexOf(savedActive) === -1) next.activeSymbol = nextSymbols.length > 0 ? nextSymbols[0] : ""
     saveInstanceSettings(next)
+  }
+
+  function setActiveSymbol(value) {
+    var nextSymbol = normalizeSymbol(value)
+    if (nextSymbol === "" || symbols.indexOf(nextSymbol) === -1) return
+
+    displaySymbol = nextSymbol
+    var next = settingsCopy()
+    next.instanceId = instanceId || generateInstanceId()
+    next.activeSymbol = nextSymbol
+    saveInstanceSettings(next)
+  }
+
+  function resolveDisplaySymbol() {
+    if (savedActive !== "" && symbols.indexOf(savedActive) !== -1) {
+      displaySymbol = savedActive
+      return
+    }
+    displaySymbol = symbols.length > 0 ? symbols[0] : ""
   }
 
   function injectPanel() {
@@ -248,20 +306,29 @@ BarWidget {
     if ("host" in target) target.host = root
   }
 
-  function open() {
-    if (panelLoader.item && panelLoader.item.open) panelLoader.item.open()
+  function openPanel() {
+    if (!panelLoader.item) return
+    if (displaySymbol === "" && symbols.length > 0) resolveDisplaySymbol()
+    if (typeof panelLoader.item.openSymbol === "function") panelLoader.item.openSymbol(displaySymbol)
+    else if (typeof panelLoader.item.open === "function") panelLoader.item.open()
+  }
+
+  function closePanel() {
+    if (panelLoader.item && typeof panelLoader.item.close === "function") panelLoader.item.close()
   }
 
   function close() {
-    if (panelLoader.item && panelLoader.item.close) panelLoader.item.close()
+    closePanel()
   }
 
-  function toggle() {
-    if (panelLoader.item && panelLoader.item.toggle) panelLoader.item.toggle()
+  function togglePanel() {
+    if (!panelLoader.item) return
+    if (opened) closePanel()
+    else openPanel()
   }
 
   function openEditor() {
-    if (panelLoader.item && panelLoader.item.openEditor) panelLoader.item.openEditor()
+    if (panelLoader.item && typeof panelLoader.item.openEditor === "function") panelLoader.item.openEditor()
   }
 
   implicitWidth: button.implicitWidth
@@ -269,44 +336,62 @@ BarWidget {
 
   onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()
-  onSymbolChanged: {
-    resetQuote()
-    if (symbol !== "") Qt.callLater(refresh)
+  onSymbolsChanged: {
+    var kept = {}
+    for (var key in quotes) {
+      if (symbols.indexOf(key) !== -1) kept[key] = quotes[key]
+    }
+    for (var i = 0; i < symbols.length; i++) {
+      if (kept[symbols[i]] === undefined) kept[symbols[i]] = { price: NaN, change: 0, status: "loading" }
+    }
+    quotes = kept
+
+    if (!displaySymbolResolved) resolveDisplaySymbol()
+    else if (symbols.indexOf(displaySymbol) === -1) displaySymbol = symbols.length > 0 ? symbols[0] : ""
+
+    pollIndex = 0
+    Qt.callLater(pollNext)
   }
 
   Component.onCompleted: {
     transientInstanceId = generateInstanceId()
-    resetQuote()
-    if (symbol !== "") Qt.callLater(refresh)
+    resolveDisplaySymbol()
+    displaySymbolResolved = true
+    if (symbols.length > 0) Qt.callLater(pollNext)
   }
 
   Process {
     id: quoteProc
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.quoteOutput = text
+      onStreamFinished: root.applyQuote(text)
     }
     onExited: function(exitCode) {
-      if (root.requestedSymbol !== root.symbol) {
-        root.quoteOutput = ""
-        root.requestedSymbol = ""
-        if (root.symbol !== "") Qt.callLater(root.refresh)
-        return
-      }
-
-      if (exitCode === 0) root.applyQuote(root.quoteOutput)
-      else if (root.symbol !== "") root.quoteStatus = "error"
-      root.quoteOutput = ""
+      var symbol = root.requestedSymbol
       root.requestedSymbol = ""
+      if (exitCode !== 0 && symbol !== "") root.updateQuote(symbol, { price: NaN, change: 0, status: "error" })
     }
   }
 
   Timer {
-    interval: 60 * 1000
-    running: root.symbol !== ""
+    id: pollTimer
+    interval: root.symbols.length > 0 ? Math.max(2, Math.round(60 / root.symbols.length)) * 1000 : 60 * 1000
+    running: root.symbols.length > 0
     repeat: true
-    triggeredOnStart: true
-    onTriggered: root.refresh()
+    triggeredOnStart: false
+    onTriggered: root.pollNext()
+  }
+
+  Timer {
+    id: rotateTimer
+    interval: root.rotateSeconds * 1000
+    running: root.rotateSeconds > 0 && root.symbols.length > 1
+    repeat: true
+    triggeredOnStart: false
+    onTriggered: {
+      var index = root.symbols.indexOf(root.displaySymbol)
+      root.displaySymbol = root.symbols[(index + 1 + root.symbols.length) % root.symbols.length]
+    }
   }
 
   Loader {
@@ -330,10 +415,10 @@ BarWidget {
     active: root.priceDown
     horizontalMargin: 8.5
     verticalPadding: 6
-    tooltipText: root.symbol === "" ? "Set symbol" : ""
+    tooltipText: root.symbols.length === 0 ? "Add symbols" : ""
     onPressed: function(button) {
       if (button === Qt.RightButton) root.openEditor()
-      else root.toggle()
+      else root.togglePanel()
     }
   }
 }

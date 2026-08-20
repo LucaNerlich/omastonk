@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "b.omastonk",
+  "id": "luca.omastonk",
   "name": "Omastonk",
-  "version": "0.0.15",
-  "author": "Brian Blakely",
-  "description": "Omarchy bar widget for a selected market symbol",
+  "version": "1.0.0",
+  "author": "Luca Nerlich",
+  "description": "Omarchy bar widget for a rotating market watchlist",
   "kinds": [
     "bar-widget"
   ],
@@ -13,19 +13,35 @@
   },
   "barWidget": {
     "displayName": "Omastonk",
-    "description": "Shows a selected symbol, current price, and today's direction.",
+    "description": "Rotates through a watchlist of market symbols with live quotes.",
     "category": "Info",
     "allowMultiple": true,
     "defaults": {
-      "symbol": ""
+      "symbols": [],
+      "activeSymbol": "",
+      "rotateSeconds": 5
     },
     "schema": [
       {
-        "key": "symbol",
+        "key": "symbols",
+        "type": "array",
+        "label": "Symbols",
+        "description": "Watchlist of market symbols to rotate through, such as AAPL, SPY, BTC-USD, or ^GSPC.",
+        "defaultValue": []
+      },
+      {
+        "key": "activeSymbol",
         "type": "string",
-        "label": "Symbol",
-        "description": "Market symbol to display, such as AAPL, SPY, BTC-USD, or ^GSPC.",
+        "label": "Active symbol",
+        "description": "Symbol shown when the widget loads.",
         "defaultValue": ""
+      },
+      {
+        "key": "rotateSeconds",
+        "type": "int",
+        "label": "Rotate seconds",
+        "description": "Seconds each symbol stays on the bar before rotating. 0 disables rotation.",
+        "defaultValue": 5
       }
     ]
   }
