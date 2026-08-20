@@ -9,7 +9,7 @@ to five years.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/brianblakely/omastonk.git --enable --yes
+omarchy plugin add https://github.com/LucaNerlich/omastonk.git --enable --yes
 ```
 
 To add another instance, edit `~/.config/omarchy/shell.json` and insert another
@@ -17,7 +17,7 @@ entry at the desired position in one of the `bar.layout.left`, `center`, or
 `right` arrays:
 
 ```json
-{ "id": "b.omastonk" }
+{ "id": "luca.omastonk" }
 ```
 
 Each repeated entry creates an independent instance. Omarchy reloads the bar
@@ -35,11 +35,11 @@ markets.
 ## Update
 
 ```bash
-omarchy plugin update b.omastonk
+omarchy plugin update luca.omastonk
 ```
 
 ## Uninstall
 
 ```bash
-omarchy plugin remove b.omastonk
+omarchy plugin remove luca.omastonk
 ```
