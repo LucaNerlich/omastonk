@@ -56,6 +56,28 @@ test("parseQuotesLine accepts list-like quotes", () => {
   assert.equal(quotes.SPY.price, 1.25);
 });
 
+test("normalizeSymbol strips delimiter characters", () => {
+  assert.equal(Model.normalizeSymbol("A,B"), "AB");
+  assert.equal(Model.normalizeSymbol("SPY;L"), "SPYL");
+  const list = Model.normalizeSymbols(["A,B", "C D", "E;F"]);
+  assert.equal(JSON.stringify(list), JSON.stringify(["AB", "CD", "EF"]));
+});
+
+test("settingsSymbols accepts QML list-like values (Array.isArray is false)", () => {
+  const qmlList = { length: 2, 0: "msft", 1: "aapl" };
+  assert.equal(Array.isArray(qmlList), false);
+  assert.equal(JSON.stringify(Model.settingsSymbols({ symbols: qmlList })), JSON.stringify(["MSFT", "AAPL"]));
+});
+
+test("parseQuotesLine accepts list-like quotes", () => {
+  const line = JSON.stringify({
+    quotes: { length: 1, 0: { state: "ok", symbol: "spy", price: 1.25, change: 0.1 } }
+  });
+  const quotes = Model.parseQuotesLine(line);
+  assert.equal(quotes.SPY.status, "ready");
+  assert.equal(quotes.SPY.price, 1.25);
+});
+
 test("clampRotateSeconds bounds and disables on junk", () => {
   assert.equal(Model.clampRotateSeconds(5), 5);
   assert.equal(Model.clampRotateSeconds(0), 0);
@@ -64,9 +86,10 @@ test("clampRotateSeconds bounds and disables on junk", () => {
   assert.equal(Model.clampRotateSeconds(99999), 3600);
 });
 
-test("formatPrice picks decimals by magnitude", () => {
+test("formatPrice picks decimals by magnitude and keeps the sign", () => {
   assert.equal(Model.formatPrice(123.456), "123.46");
   assert.equal(Model.formatPrice(0.5), "0.5000");
+  assert.equal(Model.formatPrice(-3.5), "-3.50");
   assert.equal(Model.formatPrice(NaN), "?");
 });
 

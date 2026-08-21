@@ -198,6 +198,7 @@ Panel {
     var option = selectedInterval || intervalOptions[0]
     chartProc.command = [backendBinary, "chart", "--symbol", activeSymbol, "--range", option.range, "--interval", option.interval]
     chartProc.running = true
+    chartWatchdog.restart()
   }
 
   function applyChart(raw) {
@@ -236,6 +237,7 @@ Panel {
       onStreamFinished: root.chartOutput = text
     }
     onExited: function(exitCode) {
+      chartWatchdog.stop()
       if (root.requestedChartKey !== root.chartKey()) {
         root.chartOutput = ""
         if (root.opened && !root.editing && root.activeSymbol !== "") Qt.callLater(function() { root.refreshChart(true) })
@@ -244,6 +246,21 @@ Panel {
 
       root.applyChart(root.chartOutput)
       root.chartOutput = ""
+    }
+  }
+
+  // A fetch must finish (or fail) within curl's own timeout plus margin.
+  // Covers both a backend that fails to spawn and one that hangs: without
+  // this the panel would sit on "Loading" forever.
+  Timer {
+    id: chartWatchdog
+    interval: 10000
+    onTriggered: {
+      if (root.chartStatus !== "loading") return
+      chartProc.running = false
+      root.chartPoints = []
+      root.chartStatus = "error"
+      root.chartErrorMessage = "Backend unavailable"
     }
   }
 
