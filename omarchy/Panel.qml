@@ -20,6 +20,7 @@ Panel {
   property string activeSymbol: ""
   property var chartPoints: []
   property string chartStatus: "idle"
+  property string chartErrorMessage: ""
   property string chartOutput: ""
   property string requestedChartKey: ""
 
@@ -45,7 +46,7 @@ Panel {
   readonly property int chartPanelWidth: Math.ceil(Math.max(intervalSizer.implicitWidth, tabSizer.implicitWidth, changeSizer.implicitWidth + Style.space(88)) + Style.space(28))
   readonly property var selectedInterval: intervalOptions[Math.max(0, Math.min(intervalIndex, intervalOptions.length - 1))]
   readonly property string selectedIntervalLabel: selectedInterval ? selectedInterval.label : "1D"
-  readonly property string chartStatusText: chartStatus === "loading" ? "Loading" : (chartStatus === "error" ? "No data" : "")
+  readonly property string chartStatusText: chartStatus === "loading" ? "Loading" : (chartStatus === "error" ? (chartErrorMessage !== "" ? chartErrorMessage : "No data") : "")
   readonly property string intervalChangeText: chartStatus === "ready" && isFinite(intervalPriceChange)
     ? Model.formatSignedPrice(intervalPriceChange) + " (" + Model.formatSignedPercent(intervalPercentChange) + ")"
     : (chartStatus === "loading" ? "..." : "?")
@@ -193,6 +194,7 @@ Panel {
     chartOutput = ""
     requestedChartKey = chartKey()
     chartStatus = "loading"
+    chartErrorMessage = ""
     var option = selectedInterval || intervalOptions[0]
     chartProc.command = [backendBinary, "chart", "--symbol", activeSymbol, "--range", option.range, "--interval", option.interval]
     chartProc.running = true
@@ -202,6 +204,7 @@ Panel {
     var parsed = Model.parseChartLine(raw)
     chartPoints = parsed.points
     chartStatus = parsed.state === "ok" ? "ready" : "error"
+    chartErrorMessage = parsed.message || ""
   }
 
   onHostChanged: {
@@ -218,6 +221,7 @@ Panel {
   onActiveSymbolChanged: {
     chartPoints = []
     chartStatus = "idle"
+    chartErrorMessage = ""
     if (opened && !editing && activeSymbol !== "") Qt.callLater(function() { refreshChart(true) })
   }
 
@@ -426,11 +430,16 @@ Panel {
 
           Text {
             anchors.centerIn: parent
+            width: parent.width - Style.space(16)
             visible: root.chartStatusText !== ""
             text: root.chartStatusText
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
+            wrapMode: Text.Wrap
+            elide: Text.ElideRight
+            maximumLineCount: 3
+            horizontalAlignment: Text.AlignHCenter
           }
         }
 

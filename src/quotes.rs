@@ -86,17 +86,43 @@ pub fn poll_tick(interval: Duration, len: usize) -> Duration {
     std::cmp::max(interval / len, MIN_TICK)
 }
 
-fn fetch_state(symbol: &str) -> SymbolState {
+fn fetch_state(
+    symbol: &str,
+    suggestions: &mut std::collections::HashMap<String, String>,
+) -> SymbolState {
     match yahoo::fetch_chart(symbol, "1d", "1m") {
         Ok(data) => SymbolState::Ok {
             symbol: symbol.to_string(),
             price: data.price,
             change: data.change,
         },
-        Err(message) => SymbolState::Error {
-            symbol: symbol.to_string(),
-            message,
-        },
+        Err(message) => {
+            // A delisted-style failure usually means the user typed an ISIN
+            // or a bare company name. Ask Yahoo's search endpoint once per
+            // run what it would call this instrument instead.
+            let message = if message.contains("may be delisted") {
+                let hint = match suggestions.get(symbol) {
+                    Some(cached) => Some(cached.clone()),
+                    None => {
+                        let found = yahoo::suggest_symbol(symbol);
+                        if let Some(found) = &found {
+                            suggestions.insert(symbol.to_string(), found.clone());
+                        }
+                        found
+                    }
+                };
+                match hint {
+                    Some(hint) => format!("{message} (did you mean {hint}?)"),
+                    None => message,
+                }
+            } else {
+                message
+            };
+            SymbolState::Error {
+                symbol: symbol.to_string(),
+                message,
+            }
+        }
     }
 }
 
@@ -126,8 +152,9 @@ pub fn watch(symbols: &[String], interval: Duration) {
         })
         .collect();
     let mut index = 0usize;
+    let mut suggestions = std::collections::HashMap::new();
     loop {
-        states[index] = fetch_state(&symbols[index]);
+        states[index] = fetch_state(&symbols[index], &mut suggestions);
         if !emit(&states) {
             return;
         }
@@ -138,7 +165,11 @@ pub fn watch(symbols: &[String], interval: Duration) {
 
 /// One quotes snapshot on stdout, then done.
 pub fn quote_once(symbols: &[String]) {
-    let states: Vec<SymbolState> = symbols.iter().map(|s| fetch_state(s)).collect();
+    let mut suggestions = std::collections::HashMap::new();
+    let states: Vec<SymbolState> = symbols
+        .iter()
+        .map(|s| fetch_state(s, &mut suggestions))
+        .collect();
     emit(&states);
 }
 

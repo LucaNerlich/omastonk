@@ -107,7 +107,7 @@ function parseQuotesLine(line) {
         status: "ready"
       };
     } else {
-      quotes[symbol] = { price: NaN, change: 0, status: "error" };
+      quotes[symbol] = { price: NaN, change: 0, status: "error", message: String(entry.message || "") };
     }
   }
   return quotes;
@@ -134,7 +134,7 @@ function parseChartLine(line) {
       var value = numericValue(parsed.points[i]);
       if (isFinite(value)) points.push(value);
     }
-    return { state: points.length > 1 ? "ok" : "error", points: points };
+    return { state: points.length > 1 ? "ok" : "error", points: points, message: "" };
   }
-  return { state: "error", points: [] };
+  return { state: "error", points: [], message: String(parsed.message || "") };
 }

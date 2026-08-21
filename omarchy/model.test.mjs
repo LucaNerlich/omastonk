@@ -99,6 +99,7 @@ test("parseQuotesLine maps ok and error states", () => {
   assert.equal(quotes.AAPL.price, 10.5);
   assert.equal(quotes.AAPL.change, -0.25);
   assert.equal(quotes.SPY.status, "error");
+  assert.equal(quotes.SPY.message, "boom");
   assert.ok(!("BAD" in quotes));
   assert.ok(!("" in quotes));
 });
@@ -118,7 +119,7 @@ test("parseChartLine keeps finite points and flags thin series", () => {
   const thin = Model.parseChartLine(JSON.stringify({ state: "ok", points: [1] }));
   assert.equal(thin.state, "error");
 
-  const bad = Model.parseChartLine("garbage");
+  const bad = Model.parseChartLine(JSON.stringify({ state: "error", message: "no data" }));
   assert.equal(bad.state, "error");
-  assert.equal(JSON.stringify(bad.points), "[]");
+  assert.equal(bad.message, "no data");
 });

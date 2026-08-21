@@ -44,6 +44,9 @@ BarWidget {
   readonly property string trendGlyph: quoteReady ? (priceDown ? "\u25BC" : "\u25B2") : ""
   readonly property string priceText: quoteReady ? Model.formatPrice(activeQuote.price) : (activeQuote !== null && activeQuote.status === "loading" ? "..." : "?")
   readonly property string labelText: displaySymbol === "" ? "$" : displaySymbol + " " + priceText + (trendGlyph === "" ? "" : " " + trendGlyph)
+  readonly property string errorHint: activeQuote !== null && activeQuote.status === "error" && activeQuote.message !== ""
+    ? displaySymbol + ": " + activeQuote.message
+    : ""
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
 
   // Property reads inside imported JS files are not tracked by QML
@@ -406,7 +409,7 @@ BarWidget {
     active: root.priceDown
     horizontalMargin: 8.5
     verticalPadding: 6
-    tooltipText: root.symbols.length === 0 ? "Add symbols" : ""
+    tooltipText: root.errorHint !== "" ? root.errorHint : (root.symbols.length === 0 ? "Add symbols" : "")
     onPressed: function(button) {
       if (button === Qt.RightButton) root.openEditor()
       else root.togglePanel()

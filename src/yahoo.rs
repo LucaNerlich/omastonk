@@ -11,11 +11,14 @@ use serde::Deserialize;
 
 const USER_AGENT: &str = "Mozilla/5.0";
 const CHART_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart/";
+const SEARCH_URL: &str = "https://query1.finance.yahoo.com/v1/finance/search?q=";
 const CURL_TIMEOUT_SECS: &str = "8";
 /// Hard cap on the chart payload. A 5y/1wk series is ~80 KiB; 4 MiB leaves
 /// enormous headroom while bounding what a compromised endpoint can push into
 /// the long-lived watch process.
 pub const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
+/// Search responses are tiny; cap them tighter than chart payloads.
+const MAX_SEARCH_BYTES: u64 = 256 * 1024;
 /// Error detail embedded in a JSON status line; keep it small.
 pub const MAX_ERROR_BYTES: u64 = 4 * 1024;
 
@@ -121,25 +124,24 @@ fn read_capped(mut reader: impl Read, cap: u64) -> std::io::Result<(Vec<u8>, boo
     Ok((buf, overflowed))
 }
 
-/// Fetch and parse one chart request. `range`/`interval` follow Yahoo's
-/// vocabulary (1d, 5m, 1mo, ...); the caller picks the pair.
-pub fn fetch_chart(symbol: &str, range: &str, interval: &str) -> Result<ChartData, String> {
-    let url = chart_url(symbol, range, interval);
+/// Run curl for `url`, returning at most `cap` bytes of the body. Kills curl
+/// if it keeps writing past the cap; curl also aborts oversized bodies itself
+/// (`--max-filesize`) and is pinned to HTTPS. HTTP-level errors (4xx/5xx) are
+/// returned as bodies so callers can read API error payloads; transport
+/// failures return Err with curl's stderr detail.
+fn fetch_url(url: &str, cap: u64) -> Result<Vec<u8>, String> {
     let mut child = Command::new("curl")
         .args([
-            "-fsS",
+            "-sS",
             "--max-time",
             CURL_TIMEOUT_SECS,
-            // Second boundary on the same resource: curl aborts the transfer
-            // itself once the body exceeds the cap, so a rogue endpoint cannot
-            // keep the pipe full while we stop reading.
             "--max-filesize",
-            &MAX_RESPONSE_BYTES.to_string(),
+            &cap.to_string(),
             "--proto",
             "=https",
             "-A",
             USER_AGENT,
-            &url,
+            url,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -150,11 +152,11 @@ pub fn fetch_chart(symbol: &str, range: &str, interval: &str) -> Result<ChartDat
     let stderr = child.stderr.take().ok_or("curl stderr is not piped")?;
 
     let (stdout_bytes, stdout_overflowed) =
-        read_capped(stdout, MAX_RESPONSE_BYTES).map_err(|e| format!("read curl stdout: {e}"))?;
-    let (stderr_bytes, stderr_overflowed) =
+        read_capped(stdout, cap).map_err(|e| format!("read curl stdout: {e}"))?;
+    let (stderr_bytes, _) =
         read_capped(stderr, MAX_ERROR_BYTES).map_err(|e| format!("read curl stderr: {e}"))?;
 
-    if stdout_overflowed || stderr_overflowed {
+    if stdout_overflowed {
         // curl is still trying to write; stop it instead of waiting it out.
         let _ = child.kill();
         let _ = child.wait();
@@ -167,8 +169,68 @@ pub fn fetch_chart(symbol: &str, range: &str, interval: &str) -> Result<ChartDat
         let detail = stderr.lines().last().unwrap_or("request failed");
         return Err(detail.to_string());
     }
-    let text = String::from_utf8_lossy(&stdout_bytes);
-    parse_chart(&text).ok_or_else(|| "unexpected chart payload".to_string())
+    Ok(stdout_bytes)
+}
+
+/// Fetch and parse one chart request. `range`/`interval` follow Yahoo's
+/// vocabulary (1d, 5m, 1mo, ...); the caller picks the pair.
+pub fn fetch_chart(symbol: &str, range: &str, interval: &str) -> Result<ChartData, String> {
+    let body = fetch_url(&chart_url(symbol, range, interval), MAX_RESPONSE_BYTES)?;
+    let text = String::from_utf8_lossy(&body);
+    match parse_chart(&text) {
+        Some(data) => Ok(data),
+        None => {
+            Err(api_error_description(&text)
+                .unwrap_or_else(|| "unexpected chart payload".to_string()))
+        }
+    }
+}
+
+/// Extract Yahoo's own error description (for example "No data found, symbol
+/// may be delisted") from a chart payload that carries an API-level error.
+fn api_error_description(text: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct ApiError {
+        description: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct ErrorEnvelope {
+        error: Option<ApiError>,
+    }
+    #[derive(Deserialize)]
+    struct Envelope {
+        chart: Option<ErrorEnvelope>,
+    }
+    let parsed: Envelope = serde_json::from_str(text).ok()?;
+    parsed.chart?.error?.description.filter(|d| !d.is_empty())
+}
+
+#[derive(Deserialize)]
+struct SearchResponse {
+    #[serde(default)]
+    quotes: Vec<SearchQuote>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchQuote {
+    symbol: String,
+    is_yahoo_finance: Option<bool>,
+}
+
+/// Ask Yahoo's search endpoint what `query` (an ISIN, a company name, ...)
+/// refers to; returns the first finance-listed symbol other than the query
+/// itself. Best effort: `None` on any failure.
+pub fn suggest_symbol(query: &str) -> Option<String> {
+    let url = format!("{SEARCH_URL}{}&quotesCount=6&newsCount=0", urlencode(query));
+    let body = fetch_url(&url, MAX_SEARCH_BYTES).ok()?;
+    let parsed: SearchResponse = serde_json::from_slice(&body).ok()?;
+    parsed
+        .quotes
+        .into_iter()
+        .filter(|q| q.is_yahoo_finance.unwrap_or(false))
+        .map(|q| q.symbol)
+        .find(|s| !s.is_empty() && !s.eq_ignore_ascii_case(query))
 }
 
 /// Parse a v8 chart payload. Returns `None` for anything structurally wrong
@@ -242,6 +304,33 @@ mod tests {
             chart_url("^GSPC", "1d", "5m"),
             format!("{CHART_URL}%5EGSPC?range=1d&interval=5m")
         );
+    }
+
+    #[test]
+    fn suggest_symbol_skips_query_and_non_finance() {
+        let body = r#"{"quotes":[
+            {"symbol":"IE00BK5BQT80","isYahooFinance":false},
+            {"symbol":"VWRA.L","isYahooFinance":true},
+            {"symbol":"IE00BK5BQT80.SG","isYahooFinance":true}
+        ]}"#;
+        let parsed: SearchResponse = serde_json::from_str(body).unwrap();
+        let found = parsed
+            .quotes
+            .into_iter()
+            .filter(|q| q.is_yahoo_finance.unwrap_or(false))
+            .map(|q| q.symbol)
+            .find(|s| !s.is_empty() && !s.eq_ignore_ascii_case("IE00BK5BQT80"));
+        assert_eq!(found.as_deref(), Some("VWRA.L"));
+    }
+
+    #[test]
+    fn extracts_api_error_description() {
+        let text = r#"{"chart":{"result":null,"error":{"code":"Not Found","description":"No data found, symbol may be delisted"}}}"#;
+        assert_eq!(
+            api_error_description(text).as_deref(),
+            Some("No data found, symbol may be delisted")
+        );
+        assert!(api_error_description(r#"{"chart":{"result":[]}}"#).is_none());
     }
 
     #[test]

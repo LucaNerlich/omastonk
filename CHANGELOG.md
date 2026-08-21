@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.7] - 2026-08-21
+
+### Added
+
+- Symbol suggestions on failures: when Yahoo reports a symbol as unknown or
+  delisted (ISINs and bare company names are not Yahoo tickers), the backend
+  asks the search endpoint for what the instrument is called instead, and the
+  hint surfaces in the bar tooltip and panel ("did you mean VWRA.L?").
+- API-level error descriptions from Yahoo now reach the UI instead of a bare
+  curl exit line.
+
+### Changed
+
+- Panel chart errors show the backend's error message (wrapped) rather than
+  a generic "No data".
+
 ## [2.0.6] - 2026-08-21
 
 ### Changed
