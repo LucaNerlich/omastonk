@@ -8,6 +8,14 @@ use serde::Serialize;
 
 use crate::yahoo;
 
+/// Upper bound on the watchlist. Keeps the poller's state and the request
+/// churn sane no matter what the widget settings contain.
+pub const MAX_SYMBOLS: usize = 64;
+/// Floor on the poll tick. `interval / symbols` rounds down, so without a
+/// floor a long watchlist (or `--interval-secs 0`) would degrade to a tight
+/// request loop.
+pub const MIN_TICK: Duration = Duration::from_secs(2);
+
 /// Per-symbol render state streamed to the widget.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "state", rename_all = "lowercase")]
@@ -45,7 +53,37 @@ pub fn normalize_symbols(raw: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_uppercase())
         .filter(|s| seen.insert(s.clone()))
+        .take(MAX_SYMBOLS)
         .collect()
+}
+
+/// Split `raw` into normalized symbols, refusing watchlists beyond the cap.
+pub fn parse_symbols(raw: &str) -> Result<Vec<String>, String> {
+    let symbols = normalize_symbols(raw);
+    if symbols.len() >= MAX_SYMBOLS {
+        // normalize_symbols stops at the cap; a watchlist that long is
+        // truncated by the iterator, so verify the input really ended there.
+        let total = raw
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|s| !s.trim().is_empty())
+            .count();
+        if total > MAX_SYMBOLS {
+            return Err(format!(
+                "watchlist exceeds {MAX_SYMBOLS} symbols ({total} given)"
+            ));
+        }
+    }
+    if symbols.is_empty() {
+        return Err("no symbols given; pass --symbols \"AAPL,SPY\"".to_string());
+    }
+    Ok(symbols)
+}
+
+/// Round-robin tick: one request every `interval / len` seconds, never below
+/// `MIN_TICK`.
+pub fn poll_tick(interval: Duration, len: usize) -> Duration {
+    let len = len.max(1) as u32;
+    std::cmp::max(interval / len, MIN_TICK)
 }
 
 fn fetch_state(symbol: &str) -> SymbolState {
@@ -73,13 +111,13 @@ fn emit(states: &[SymbolState]) -> bool {
 }
 
 /// Poll the watchlist round-robin: with N symbols and interval I each symbol
-/// refreshes every I seconds while requests stay I/N apart. Runs until stdout
-/// closes.
+/// refreshes every I seconds while requests stay I/N apart (never faster than
+/// MIN_TICK). Runs until stdout closes.
 pub fn watch(symbols: &[String], interval: Duration) {
     if symbols.is_empty() {
         return;
     }
-    let tick = interval / symbols.len() as u32;
+    let tick = poll_tick(interval, symbols.len());
     let mut states: Vec<SymbolState> = symbols
         .iter()
         .map(|symbol| SymbolState::Error {
@@ -139,5 +177,41 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains(r#""state":"error""#));
         assert!(json.contains(r#""message":"boom""#));
+    }
+
+    #[test]
+    fn poll_tick_never_falls_below_floor() {
+        assert_eq!(
+            poll_tick(Duration::from_secs(60), 2),
+            Duration::from_secs(30)
+        );
+        assert_eq!(poll_tick(Duration::from_secs(0), 2), MIN_TICK);
+        assert_eq!(poll_tick(Duration::from_secs(60), 100), MIN_TICK);
+        assert_eq!(poll_tick(Duration::from_secs(5), 100), MIN_TICK);
+        assert_eq!(
+            poll_tick(Duration::from_secs(60), 1),
+            Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn parse_symbols_refuses_watchlists_beyond_cap() {
+        let big = (0..MAX_SYMBOLS + 1)
+            .map(|i| format!("SYM{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let err = parse_symbols(&big).unwrap_err();
+        assert!(err.contains("exceeds"), "err: {err}");
+        assert!(parse_symbols("").is_err());
+        assert!(parse_symbols("  ,  ").is_err());
+    }
+
+    #[test]
+    fn normalize_symbols_truncates_at_cap() {
+        let big = (0..MAX_SYMBOLS * 2)
+            .map(|i| format!("SYM{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(normalize_symbols(&big).len(), MAX_SYMBOLS);
     }
 }

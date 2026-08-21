@@ -54,14 +54,6 @@ enum Command {
     },
 }
 
-fn parse_symbols(raw: &str) -> Result<Vec<String>, String> {
-    let symbols = quotes::normalize_symbols(raw);
-    if symbols.is_empty() {
-        return Err("no symbols given; pass --symbols \"AAPL,SPY\"".to_string());
-    }
-    Ok(symbols)
-}
-
 /// Emit failures as JSON on stdout so the QML side can render every outcome,
 /// then exit nonzero for scripting.
 fn fail(message: &str) -> ExitCode {
@@ -86,7 +78,7 @@ fn main() -> ExitCode {
         Command::Watch {
             symbols,
             interval_secs,
-        } => match parse_symbols(&symbols) {
+        } => match quotes::parse_symbols(&symbols) {
             Ok(symbols) => {
                 quotes::watch(&symbols, Duration::from_secs(interval_secs));
                 // stdout closed: the shell is gone.
@@ -94,7 +86,7 @@ fn main() -> ExitCode {
             }
             Err(message) => fail(&message),
         },
-        Command::Quote { symbols } => match parse_symbols(&symbols) {
+        Command::Quote { symbols } => match quotes::parse_symbols(&symbols) {
             Ok(symbols) => {
                 quotes::quote_once(&symbols);
                 ExitCode::from(0)

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.4] - 2026-08-21
+
+### Fixed
+
+- Bound the memory a compromised or malfunctioning endpoint can consume:
+  `fetch_chart` no longer buffers the complete curl output with
+  `Command::output()`; stdout and stderr are read through a hard cap
+  (4 MiB response / 4 KiB error detail), the child is killed on overflow,
+  and curl additionally aborts oversized bodies itself (`--max-filesize`)
+  with HTTPS-only transport (`--proto =https`).
+- Bound the poll loop: `--interval-secs 0` or a watchlist longer than the
+  interval used to degrade to a tight request loop; the per-request tick
+  now has a 2-second floor.
+- Bound the watchlist: more than 64 symbols is refused with a JSON error
+  line instead of growing the poller's state without limit.
+
 ## [2.0.3] - 2026-08-21
 
 ### Changed
