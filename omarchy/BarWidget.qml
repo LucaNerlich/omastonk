@@ -290,6 +290,9 @@ BarWidget {
 
   function openPanel() {
     if (!panelLoader.item) return
+    // Prefer the persisted selection: rotation moves displaySymbol, but the
+    // symbol the user explicitly picked should win when the panel opens.
+    if (savedActive !== "" && symbols.indexOf(savedActive) !== -1) displaySymbol = savedActive
     if (displaySymbol === "" && symbols.length > 0) resolveDisplaySymbol()
     if (typeof panelLoader.item.openSymbol === "function") panelLoader.item.openSymbol(displaySymbol)
     else if (typeof panelLoader.item.open === "function") panelLoader.item.open()
@@ -337,23 +340,30 @@ BarWidget {
   Process {
     id: watchProc
     property bool startedOnce: false
+    property real startedAt: 0
+    function ranMs() { return Date.now() - startedAt }
     stdout: SplitParser {
       onRead: function(line) { root.applyQuotesLine(line) }
     }
     onStarted: {
       watchProc.startedOnce = true
+      watchProc.startedAt = Date.now()
       root.watchFailures = 0
     }
     onExited: {
-      if (!root.watchFallback && root.symbols.length > 0) {
-        root.quotes = {}
-        root.seedQuotes()
-      }
+      // Never leave the last snapshot looking live while the watcher is down.
+      root.quotes = {}
+      root.seedQuotes()
       watchRestartTimer.restart()
     }
     onRunningChanged: {
       if (watchProc.running) return
       var failedStart = !watchProc.startedOnce
+      if (watchProc.startedOnce && watchProc.ranMs() < 1000) {
+        // Spawned but died immediately: counts as a failed start too, or a
+        // corrupt binary would crash-loop here forever.
+        failedStart = true
+      }
       watchProc.startedOnce = false
       if (failedStart) {
         root.watchFailures += 1
@@ -379,7 +389,9 @@ BarWidget {
   Timer {
     id: rotateTimer
     interval: root.rotateSeconds * 1000
-    running: root.rotateSeconds > 0 && root.symbols.length > 1
+    // Rotation pauses while the panel is open: an explicitly selected symbol
+    // must not be rotated away underneath the user.
+    running: root.rotateSeconds > 0 && root.symbols.length > 1 && !root.opened
     repeat: true
     triggeredOnStart: false
     onTriggered: {

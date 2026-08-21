@@ -1,7 +1,12 @@
 // Pure parsing/formatting shared by BarWidget.qml and Panel.qml.
 
 function normalizeSymbol(value) {
-  return String(value || "").trim().toUpperCase().replace(/\s+/g, "");
+  // Commas and semicolons would break the --symbols CSV round-trip to the
+  // backend, so they never survive normalization.
+  return String(value || "")
+    .replace(/[,;\s]+/g, "")
+    .trim()
+    .toUpperCase();
 }
 
 function normalizeSymbols(list) {
@@ -47,12 +52,14 @@ function numericValue(value) {
 }
 
 function formatPrice(value) {
+  // Natural sign: negatives render with "-", positives without a prefix
+  // (the bar label adds its own trend glyph).
   var number = Number(value);
   if (!isFinite(number)) return "?";
 
   var absolute = Math.abs(number);
   var decimals = absolute >= 1 ? 2 : 4;
-  return absolute.toFixed(decimals);
+  return (number < 0 ? "-" : "") + absolute.toFixed(decimals);
 }
 
 function signPrefix(value) {
@@ -62,7 +69,9 @@ function signPrefix(value) {
 function formatSignedPrice(value) {
   var number = Number(value);
   if (!isFinite(number)) return "?";
-  return signPrefix(number) + formatPrice(number);
+  var absolute = Math.abs(number);
+  var decimals = absolute >= 1 ? 2 : 4;
+  return signPrefix(number) + absolute.toFixed(decimals);
 }
 
 function formatSignedPercent(value) {
