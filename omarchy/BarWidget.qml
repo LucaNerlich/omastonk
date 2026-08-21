@@ -373,6 +373,18 @@ BarWidget {
     onTriggered: root.restartWatch()
   }
 
+  Timer {
+    id: rotateTimer
+    interval: root.rotateSeconds * 1000
+    running: root.rotateSeconds > 0 && root.symbols.length > 1
+    repeat: true
+    triggeredOnStart: false
+    onTriggered: {
+      var index = root.symbols.indexOf(root.displaySymbol)
+      root.displaySymbol = root.symbols[(index + 1 + root.symbols.length) % root.symbols.length]
+    }
+  }
+
   Loader {
     id: panelLoader
     active: true
