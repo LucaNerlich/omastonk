@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Print the CHANGELOG section for a version (default: manifest version).
+# Print the CHANGELOG section for a version (default: crate version).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-version="${1:-$(jq -r '.version // empty' "$repo_root/manifest.json")}"
+version="${1:-$(awk -F '"' '/^version = / {print $2; exit}' "$repo_root/Cargo.toml")}"
 
 awk -v ver="$version" '
   $0 ~ "^## \\[" ver "\\]" {p=1; next}

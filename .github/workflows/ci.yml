@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -13,53 +13,79 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  OMARCHY_REF: v4.0.0
-
 jobs:
-  validate:
-    name: validate plugin and lint QML
+  linux:
+    name: test (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq qt6-declarative-dev-tools \
-            qml6-module-qtquick qml6-module-qtquick-window \
-            qml6-module-qtquick-controls qml6-module-qtquick-layouts \
-            qml6-module-qtquick-shapes
+      # Match rust-toolchain.toml. `@stable` installs clippy/rustfmt on the
+      # `stable` toolchain name, but the pin overrides cargo to `1.97.1`, which
+      # then fails `cargo fmt` with "cargo-fmt is not installed".
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt
 
-      - name: Validate manifest (omarchy plugin validate)
-        run: scripts/validate-plugin.sh
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Prepare QML import stubs
-        run: |
-          set -euo pipefail
-          mkdir -p qml-imports/Quickshell/Io qml-imports/Quickshell/Wayland qml-imports/Quickshell/Hyprland qml-imports/qs
+      - name: Format
+        run: cargo fmt --all -- --check
 
-          # Quickshell itself only ships for Arch; the shell's qs.Commons /
-          # qs.Ui modules come from the pinned Omarchy tag. qmllint still
-          # catches every syntax/structural error in the plugin with the
-          # imports stubbed out.
-          printf 'module Quickshell\n' > qml-imports/Quickshell/qmldir
-          printf 'import QtQuick\nItem {}\n' > qml-imports/Quickshell/Quickshell.qml
-          printf 'module Quickshell.Io\n' > qml-imports/Quickshell/Io/qmldir
-          printf 'import QtQuick\nItem {}\n' > qml-imports/Quickshell/Io/Io.qml
-          printf 'module Quickshell.Wayland\n' > qml-imports/Quickshell/Wayland/qmldir
-          printf 'import QtQuick\nItem {}\n' > qml-imports/Quickshell/Wayland/Wayland.qml
-          printf 'module Quickshell.Hyprland\n' > qml-imports/Quickshell/Hyprland/qmldir
-          printf 'import QtQuick\nItem {}\n' > qml-imports/Quickshell/Hyprland/Hyprland.qml
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
 
-          curl -fsSL "https://github.com/basecamp/omarchy/archive/refs/tags/${OMARCHY_REF}.tar.gz" -o /tmp/omarchy.tar.gz
-          mkdir -p /tmp/omarchy-shell
-          tar -xzf /tmp/omarchy.tar.gz -C /tmp/omarchy-shell --strip-components=2 "omarchy-${OMARCHY_REF#v}/shell"
-          mv /tmp/omarchy-shell/Commons qml-imports/qs/Commons
-          mv /tmp/omarchy-shell/Ui qml-imports/qs/Ui
+      - name: Test
+        run: cargo test --all-targets --locked
 
-      - name: Lint QML
-        run: |
-          set -euo pipefail
-          QMLLINT="$(command -v qmllint-qt6 || command -v qmllint || echo /usr/lib/qt6/bin/qmllint)"
-          QML2_IMPORT_PATH="$PWD/qml-imports" "$QMLLINT" -I "$PWD/qml-imports" BarWidget.qml Panel.qml
+      - name: Plugin model tests
+        run: node omarchy/model.test.mjs
+
+  msrv:
+    name: test (rust 1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.85.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.85.0
+
+      - name: Check declared minimum Rust version
+        run: cargo check --all-targets --locked
+
+  # Independent of linux/msrv: marketplace review needs this job to run even
+  # if a prerequisite such as rustfmt is missing. A skipped verify cannot
+  # attest that the bundled ELF matches the reviewed source. Do not add
+  # `needs:` here. The tag Release workflow re-runs the same script.
+  verify-bundle:
+    name: marketplace bundle (inspectable, reproducible)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Inspect before installing the pinned toolchain so a rustup failure
+      # cannot skip the non-stripped / recorded-hash / source-id attestation.
+      # The source-id check catches a leftover ELF after a comment-only Rust
+      # edit without waiting for the musl rebuild.
+      - name: Inspect committed ELF
+        run: VERIFY_BUNDLE_SKIP_REBUILD=1 scripts/verify-bundle.sh
+
+      # ring (via ureq's rustls) compiles C for the musl target.
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # Pin to the toolchain in rust-toolchain.toml so the check reproduces
+      # the exact binary that was committed.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: verify-bundle-musl
+
+      - name: Rebuild and compare byte-for-byte
+        run: scripts/verify-bundle.sh

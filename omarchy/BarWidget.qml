@@ -2,141 +2,53 @@ import QtQuick
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
+// Quattro bar entry point for the Omastonk market watchlist. Quote fetching
+// lives in the Rust backend (`omastonk-qs watch`); this file owns the bar
+// button, display rotation, and the watch process lifecycle.
 BarWidget {
   id: root
   moduleName: "luca.omastonk"
 
+  function decodeFileUrl(urlString) {
+    var path = String(urlString).replace(/^file:\/\//, "")
+    try {
+      return decodeURIComponent(path)
+    } catch (e) {
+      return path
+    }
+  }
+
+  readonly property string bundledBinary: root.decodeFileUrl(
+    Qt.resolvedUrl("bin/omastonk-qs").toString())
+  readonly property int fallbackThreshold: 2
+  property bool watchFallback: false
+  property int watchFailures: 0
+  readonly property string backendBinary: watchFallback ? "omastonk-qs" : bundledBinary
+  readonly property int pollIntervalSecs: 60
+
   property var quotes: ({})
-  property int pollIndex: 0
-  property string requestedSymbol: ""
   property string transientInstanceId: ""
   property string displaySymbol: ""
   property bool displaySymbolResolved: false
+  property string watchArgs: ""
 
-  readonly property string symbolLegacy: normalizeSymbol(setting("symbol", ""))
-  readonly property var symbols: normalizeSymbols(settingsSymbols())
-  readonly property string savedActive: normalizeSymbol(setting("activeSymbol", ""))
-  readonly property int rotateSeconds: clampRotateSeconds(Number(setting("rotateSeconds", 5)))
+  readonly property var symbols: Model.normalizeSymbols(Model.settingsSymbols(settings))
+  readonly property string savedActive: Model.normalizeSymbol(setting("activeSymbol", ""))
+  readonly property int rotateSeconds: Model.clampRotateSeconds(setting("rotateSeconds", 5))
   readonly property string instanceId: String(setting("instanceId", "")) || transientInstanceId
   readonly property var activeQuote: quotes[displaySymbol] || null
   readonly property bool quoteReady: activeQuote !== null && activeQuote.status === "ready" && isFinite(activeQuote.price)
   readonly property bool priceDown: quoteReady && activeQuote.change < 0
   readonly property string trendGlyph: quoteReady ? (priceDown ? "\u25BC" : "\u25B2") : ""
-  readonly property string priceText: quoteReady ? formatPrice(activeQuote.price) : (activeQuote !== null && activeQuote.status === "loading" ? "..." : "?")
+  readonly property string priceText: quoteReady ? Model.formatPrice(activeQuote.price) : (activeQuote !== null && activeQuote.status === "loading" ? "..." : "?")
   readonly property string labelText: displaySymbol === "" ? "$" : displaySymbol + " " + priceText + (trendGlyph === "" ? "" : " " + trendGlyph)
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
-
-  function settingsSymbols() {
-    var raw = setting("symbols")
-    if (Array.isArray(raw)) return raw
-    return symbolLegacy === "" ? [] : [symbolLegacy]
-  }
-
-  function normalizeSymbols(list) {
-    var seen = {}
-    var result = []
-    for (var i = 0; i < list.length; i++) {
-      var value = normalizeSymbol(list[i])
-      if (value === "" || seen[value]) continue
-      seen[value] = true
-      result.push(value)
-    }
-    return result
-  }
-
-  function clampRotateSeconds(value) {
-    if (!isFinite(value) || value <= 0) return 0
-    return Math.min(Math.round(value), 3600)
-  }
-
-  function normalizeSymbol(value) {
-    return String(value || "").trim().toUpperCase().replace(/\s+/g, "")
-  }
-
-  function numericValue(value) {
-    if (value === undefined || value === null || value === "") return NaN
-    var number = Number(value)
-    return isFinite(number) ? number : NaN
-  }
-
-  function formatPrice(value) {
-    var number = Number(value)
-    if (!isFinite(number)) return "?"
-
-    var absolute = Math.abs(number)
-    var decimals = absolute >= 1 ? 2 : 4
-    return number.toFixed(decimals)
-  }
 
   function generateInstanceId() {
     return "omastonk-" + Date.now().toString(36)
       + "-" + Math.floor(Math.random() * 0x100000000).toString(36)
-  }
-
-  function quoteUrl(symbol) {
-    return "https://query1.finance.yahoo.com/v8/finance/chart/"
-      + encodeURIComponent(symbol)
-      + "?range=1d&interval=1m"
-  }
-
-  function updateQuote(symbol, entry) {
-    var next = {}
-    for (var key in quotes) next[key] = quotes[key]
-    next[symbol] = entry
-    quotes = next
-  }
-
-  function resetQuoteFor(symbol) {
-    if (symbol === "") return
-    updateQuote(symbol, { price: NaN, change: 0, status: "loading" })
-  }
-
-  function requestQuote(symbol) {
-    if (symbol === "" || quoteProc.running) return
-
-    resetQuoteFor(symbol)
-    requestedSymbol = symbol
-    quoteProc.command = ["curl", "-fsS", "--max-time", "6", "-A", "Mozilla/5.0", quoteUrl(symbol)]
-    quoteProc.running = true
-  }
-
-  function pollNext() {
-    if (symbols.length === 0) return
-    pollIndex = (pollIndex + 1) % symbols.length
-    requestQuote(symbols[pollIndex])
-  }
-
-  function applyQuote(raw) {
-    var symbol = requestedSymbol
-    var text = String(raw || "").trim()
-    if (symbol === "" || text === "") {
-      if (symbol !== "") updateQuote(symbol, { price: NaN, change: 0, status: "error" })
-      return
-    }
-
-    try {
-      var parsed = JSON.parse(text)
-      var chart = parsed && parsed.chart ? parsed.chart : null
-      if (chart && chart.error) {
-        updateQuote(symbol, { price: NaN, change: 0, status: "error" })
-        return
-      }
-
-      var result = chart && chart.result && chart.result.length > 0 ? chart.result[0] : null
-      var meta = result && result.meta ? result.meta : null
-      var price = numericValue(meta ? meta.regularMarketPrice : NaN)
-      var previous = numericValue(meta ? meta.chartPreviousClose : NaN)
-      if (!isFinite(previous)) previous = numericValue(meta ? meta.previousClose : NaN)
-      if (!isFinite(price)) {
-        updateQuote(symbol, { price: NaN, change: 0, status: "error" })
-        return
-      }
-
-      updateQuote(symbol, { price: price, change: isFinite(previous) ? price - previous : 0, status: "ready" })
-    } catch (e) {
-      updateQuote(symbol, { price: NaN, change: 0, status: "error" })
-    }
   }
 
   function slotHost() {
@@ -270,7 +182,7 @@ BarWidget {
   }
 
   function setSymbols(values) {
-    var nextSymbols = normalizeSymbols(values)
+    var nextSymbols = Model.normalizeSymbols(values)
     var next = settingsCopy()
     next.instanceId = instanceId || generateInstanceId()
     next.symbols = nextSymbols
@@ -279,7 +191,7 @@ BarWidget {
   }
 
   function setActiveSymbol(value) {
-    var nextSymbol = normalizeSymbol(value)
+    var nextSymbol = Model.normalizeSymbol(value)
     if (nextSymbol === "" || symbols.indexOf(nextSymbol) === -1) return
 
     displaySymbol = nextSymbol
@@ -295,6 +207,36 @@ BarWidget {
       return
     }
     displaySymbol = symbols.length > 0 ? symbols[0] : ""
+  }
+
+  function seedQuotes() {
+    var next = {}
+    for (var i = 0; i < symbols.length; i++) {
+      var symbol = symbols[i]
+      next[symbol] = quotes[symbol] !== undefined ? quotes[symbol] : { price: NaN, change: 0, status: "loading" }
+    }
+    quotes = next
+  }
+
+  function applyQuotesLine(line) {
+    var parsed = Model.parseQuotesLine(line)
+    if (parsed === null) return
+    quotes = parsed
+  }
+
+  function restartWatch() {
+    var args = symbols.join(",")
+    if (args === "") {
+      watchArgs = ""
+      watchProc.running = false
+      return
+    }
+    if (args === watchArgs && watchProc.running) return
+
+    watchArgs = args
+    watchProc.command = [backendBinary, "watch", "--symbols", args, "--interval-secs", String(pollIntervalSecs)]
+    watchProc.running = false
+    Qt.callLater(function() { watchProc.running = true })
   }
 
   function injectPanel() {
@@ -337,61 +279,61 @@ BarWidget {
   onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()
   onSymbolsChanged: {
-    var kept = {}
-    for (var key in quotes) {
-      if (symbols.indexOf(key) !== -1) kept[key] = quotes[key]
-    }
-    for (var i = 0; i < symbols.length; i++) {
-      if (kept[symbols[i]] === undefined) kept[symbols[i]] = { price: NaN, change: 0, status: "loading" }
-    }
-    quotes = kept
-
     if (!displaySymbolResolved) resolveDisplaySymbol()
     else if (symbols.indexOf(displaySymbol) === -1) displaySymbol = symbols.length > 0 ? symbols[0] : ""
 
-    pollIndex = 0
-    Qt.callLater(pollNext)
+    seedQuotes()
+    restartWatch()
   }
 
   Component.onCompleted: {
     transientInstanceId = generateInstanceId()
     resolveDisplaySymbol()
     displaySymbolResolved = true
-    if (symbols.length > 0) Qt.callLater(pollNext)
+    seedQuotes()
+    restartWatch()
   }
 
   Process {
-    id: quoteProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.applyQuote(text)
+    id: watchProc
+    property bool startedOnce: false
+    stdout: SplitParser {
+      onRead: function(line) { root.applyQuotesLine(line) }
     }
-    onExited: function(exitCode) {
-      var symbol = root.requestedSymbol
-      root.requestedSymbol = ""
-      if (exitCode !== 0 && symbol !== "") root.updateQuote(symbol, { price: NaN, change: 0, status: "error" })
+    onStarted: {
+      watchProc.startedOnce = true
+      root.watchFailures = 0
+    }
+    onExited: {
+      if (!root.watchFallback && root.symbols.length > 0) {
+        root.quotes = {}
+        root.seedQuotes()
+      }
+      watchRestartTimer.restart()
+    }
+    onRunningChanged: {
+      if (watchProc.running) return
+      var failedStart = !watchProc.startedOnce
+      watchProc.startedOnce = false
+      if (failedStart) {
+        root.watchFailures += 1
+        if (root.watchFailures >= root.fallbackThreshold) {
+          root.watchFailures = 0
+          root.watchFallback = !root.watchFallback
+          root.watchArgs = ""
+          Qt.callLater(root.restartWatch)
+          return
+        }
+      }
+      watchRestartTimer.restart()
     }
   }
 
   Timer {
-    id: pollTimer
-    interval: root.symbols.length > 0 ? Math.max(2, Math.round(60 / root.symbols.length)) * 1000 : 60 * 1000
-    running: root.symbols.length > 0
-    repeat: true
-    triggeredOnStart: false
-    onTriggered: root.pollNext()
-  }
-
-  Timer {
-    id: rotateTimer
-    interval: root.rotateSeconds * 1000
-    running: root.rotateSeconds > 0 && root.symbols.length > 1
-    repeat: true
-    triggeredOnStart: false
-    onTriggered: {
-      var index = root.symbols.indexOf(root.displaySymbol)
-      root.displaySymbol = root.symbols[(index + 1 + root.symbols.length) % root.symbols.length]
-    }
+    id: watchRestartTimer
+    interval: 5000
+    repeat: false
+    onTriggered: root.restartWatch()
   }
 
   Loader {

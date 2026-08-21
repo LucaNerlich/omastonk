@@ -2,7 +2,11 @@ import QtQuick
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
+// Chart panel for the Omastonk watchlist. Chart data comes from the Rust
+// backend (`omastonk-qs chart`); this file owns presentation, the symbol
+// tabs, the interval picker, and the watchlist editor.
 Panel {
   id: root
   moduleName: "luca.omastonk"
@@ -24,7 +28,8 @@ Panel {
   readonly property bool intervalDown: chartPoints.length > 1 && chartPoints[chartPoints.length - 1] < chartPoints[0]
   readonly property color chartColor: intervalDown ? Color.bar.active : Color.bar.text
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property var symbols: host ? host.symbols : settingsSymbols()
+  readonly property string backendBinary: host ? host.backendBinary : "omastonk-qs"
+  readonly property var symbols: host ? host.symbols : Model.settingsSymbols(setting("symbols"))
   readonly property int activeIndex: symbols.indexOf(activeSymbol)
   readonly property real intervalPriceChange: chartPoints.length > 1 ? chartPoints[chartPoints.length - 1] - chartPoints[0] : NaN
   readonly property real intervalPercentChange: chartPoints.length > 1 && chartPoints[0] !== 0 ? intervalPriceChange / chartPoints[0] * 100 : NaN
@@ -42,82 +47,15 @@ Panel {
   readonly property string selectedIntervalLabel: selectedInterval ? selectedInterval.label : "1D"
   readonly property string chartStatusText: chartStatus === "loading" ? "Loading" : (chartStatus === "error" ? "No data" : "")
   readonly property string intervalChangeText: chartStatus === "ready" && isFinite(intervalPriceChange)
-    ? formatSignedPrice(intervalPriceChange) + " (" + formatSignedPercent(intervalPercentChange) + ")"
+    ? Model.formatSignedPrice(intervalPriceChange) + " (" + Model.formatSignedPercent(intervalPercentChange) + ")"
     : (chartStatus === "loading" ? "..." : "?")
-
-  function normalizeSymbol(value) {
-    return String(value || "").trim().toUpperCase().replace(/\s+/g, "")
-  }
-
-  function settingsSymbols() {
-    var raw = setting("symbols")
-    if (Array.isArray(raw)) return normalizeSymbols(raw)
-    var legacy = normalizeSymbol(setting("symbol", ""))
-    return legacy === "" ? [] : [legacy]
-  }
-
-  function normalizeSymbols(list) {
-    var seen = {}
-    var result = []
-    for (var i = 0; i < list.length; i++) {
-      var value = normalizeSymbol(list[i])
-      if (value === "" || seen[value]) continue
-      seen[value] = true
-      result.push(value)
-    }
-    return result
-  }
-
-  function numericValue(value) {
-    if (value === undefined || value === null || value === "") return NaN
-    var number = Number(value)
-    return isFinite(number) ? number : NaN
-  }
-
-  function formatPrice(value) {
-    var number = Number(value)
-    if (!isFinite(number)) return "?"
-
-    var absolute = Math.abs(number)
-    var decimals = absolute >= 1 ? 2 : 4
-    return absolute.toFixed(decimals)
-  }
-
-  function signPrefix(value) {
-    return Number(value) < 0 ? "-" : "+"
-  }
-
-  function formatSignedPrice(value) {
-    var number = Number(value)
-    if (!isFinite(number)) return "?"
-    return signPrefix(number) + formatPrice(number)
-  }
-
-  function formatSignedPercent(value) {
-    var number = Number(value)
-    if (!isFinite(number)) return "?"
-    return signPrefix(number) + Math.abs(number).toFixed(2) + "%"
-  }
-
-  function clampIntervalIndex(value) {
-    var max = intervalOptions.length - 1
-    return Math.max(0, Math.min(max, Math.round(Number(value) || 0)))
-  }
 
   function chartKey() {
     return activeSymbol + "|" + selectedIntervalLabel
   }
 
-  function chartUrl() {
-    var option = selectedInterval || intervalOptions[0]
-    return "https://query1.finance.yahoo.com/v8/finance/chart/"
-      + encodeURIComponent(activeSymbol)
-      + "?range=" + encodeURIComponent(option.range)
-      + "&interval=" + encodeURIComponent(option.interval)
-  }
-
   function openSymbol(symbol) {
-    var next = normalizeSymbol(symbol)
+    var next = Model.normalizeSymbol(symbol)
     if (next !== "" && symbols.indexOf(next) !== -1) activeSymbol = next
     editing = symbols.length === 0
     root.controller.show()
@@ -169,7 +107,7 @@ Panel {
 
   function submit() {
     addDraftSymbol(addField.text)
-    var next = normalizeSymbols(draftSymbols)
+    var next = Model.normalizeSymbols(draftSymbols)
     if (host && host.setSymbols) host.setSymbols(next)
     else draftSymbols = next
 
@@ -192,7 +130,7 @@ Panel {
   function addDraftSymbol(value) {
     var parts = String(value || "").trim().toUpperCase().split(/\s+/)
     for (var i = 0; i < parts.length; i++) {
-      var next = normalizeSymbol(parts[i])
+      var next = Model.normalizeSymbol(parts[i])
       if (next === "" || draftSymbols.indexOf(next) !== -1) continue
       draftSymbols = draftSymbols.concat([next])
     }
@@ -225,7 +163,7 @@ Panel {
   }
 
   function selectInterval(index) {
-    var next = clampIntervalIndex(index)
+    var next = Model.clampIntervalIndex(index, intervalOptions.length)
     if (next === intervalIndex) return
     intervalIndex = next
     refreshChart(true)
@@ -244,39 +182,15 @@ Panel {
     chartOutput = ""
     requestedChartKey = chartKey()
     chartStatus = "loading"
-    chartProc.command = ["curl", "-fsS", "--max-time", "8", "-A", "Mozilla/5.0", chartUrl()]
+    var option = selectedInterval || intervalOptions[0]
+    chartProc.command = [backendBinary, "chart", "--symbol", activeSymbol, "--range", option.range, "--interval", option.interval]
     chartProc.running = true
   }
 
   function applyChart(raw) {
-    var text = String(raw || "").trim()
-    if (text === "") {
-      chartPoints = []
-      chartStatus = "error"
-      return
-    }
-
-    try {
-      var parsed = JSON.parse(text)
-      var chart = parsed && parsed.chart ? parsed.chart : null
-      var result = chart && chart.result && chart.result.length > 0 ? chart.result[0] : null
-      var quote = result && result.indicators && result.indicators.quote && result.indicators.quote.length > 0
-        ? result.indicators.quote[0]
-        : null
-      var close = quote && Array.isArray(quote.close) ? quote.close : []
-      var points = []
-
-      for (var i = 0; i < close.length; i++) {
-        var value = numericValue(close[i])
-        if (isFinite(value)) points.push(value)
-      }
-
-      chartPoints = points
-      chartStatus = points.length > 1 ? "ready" : "error"
-    } catch (e) {
-      chartPoints = []
-      chartStatus = "error"
-    }
+    var parsed = Model.parseChartLine(raw)
+    chartPoints = parsed.points
+    chartStatus = parsed.state === "ok" ? "ready" : "error"
   }
 
   onHostChanged: {
@@ -313,8 +227,7 @@ Panel {
         return
       }
 
-      if (exitCode === 0) root.applyChart(root.chartOutput)
-      else root.chartStatus = "error"
+      root.applyChart(root.chartOutput)
       root.chartOutput = ""
     }
   }
@@ -595,7 +508,7 @@ Panel {
                 text: modelData
                 foreground: root.foreground
                 onTextChanged: {
-                  var next = root.normalizeSymbol(text)
+                  var next = Model.normalizeSymbol(text)
                   if (root.draftSymbols[index] !== next) root.draftSymbols[index] = next
                 }
                 Keys.onEscapePressed: root.cancelEdit()

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-08-21
+
+### Added
+
+- Rust backend (`omastonk-qs`): staggered round-robin quote polling with a
+  single streaming `watch` process, serde-typed Yahoo Finance parsing, and a
+  `chart` subcommand that serves the panel's close-series.
+- Bundled statically linked musl x86_64 backend (`omarchy/bin/omastonk-qs`)
+  with a reproducible-build attestation (`make verify-bundle`, the
+  marketplace gate); falls back to an `omastonk-qs` binary on PATH.
+- Unit tests for the backend and node tests for the QML model helpers
+  (`make test`, `make plugin-test`).
+- GitHub Actions: cargo format/clippy/test, plugin model tests, MSRV check,
+  and the independent marketplace bundle job; tag-driven release publishing
+  the tarball with changelog notes.
+
+### Changed
+
+- Quote fetching moved from per-symbol curl subprocesses in QML to the Rust
+  backend; the QML is now pure presentation.
+- Chart requests in the panel go through `omastonk-qs chart` instead of curl.
+- Shared parsing/formatting helpers extracted to `omarchy/Model.js`.
+
 ## [1.0.0] - 2026-08-20
 
 ### Added

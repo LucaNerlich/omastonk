@@ -2,14 +2,14 @@
   "schemaVersion": 1,
   "id": "luca.omastonk",
   "name": "Omastonk",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "Luca Nerlich",
   "description": "Omarchy bar widget for a rotating market watchlist",
   "kinds": [
     "bar-widget"
   ],
   "entryPoints": {
-    "barWidget": "BarWidget.qml"
+    "barWidget": "omarchy/BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Omastonk",
