@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.8] - 2026-08-21
+
+### Fixed
+
+- Backend resource bounds hardened (from audit #1/#2): an overflowing
+  response fails immediately instead of draining stderr from a blocked
+  writer (up to 8s stall per tick), and the curl child is killed and reaped
+  on every path so read failures can't leak orphans/zombies.
+- Watchlist cap counts deduplicated symbols (#3): duplicate entries no
+  longer falsely reject a valid watchlist.
+- Symbol suggestion lookups cache negative results (#4): unresolvable
+  symbols stop re-querying the search endpoint every poll tick.
+
+### Fixed (QML frontend, from audit #5-#10)
+
+- Panel chart fetch has a watchdog: a backend that fails to spawn or hangs
+  no longer leaves the panel on "Loading" forever.
+- A watch process exit always clears and reseeds quotes; the PATH fallback
+  no longer keeps rendering a stale price as live.
+- A watcher that spawns but dies instantly counts toward the fallback
+  threshold instead of crash-looping every 5 seconds.
+- Rotation pauses while the panel is open and opening prefers the persisted
+  selection.
+- formatPrice keeps the sign of negative prices; normalizeSymbol strips
+  commas/semicolons so entries can't break the CSV round-trip.
+
 ## [2.0.7] - 2026-08-21
 
 ### Added
