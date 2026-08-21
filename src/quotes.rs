@@ -53,25 +53,19 @@ pub fn normalize_symbols(raw: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_uppercase())
         .filter(|s| seen.insert(s.clone()))
-        .take(MAX_SYMBOLS)
         .collect()
 }
 
 /// Split `raw` into normalized symbols, refusing watchlists beyond the cap.
 pub fn parse_symbols(raw: &str) -> Result<Vec<String>, String> {
+    // Count the deduplicated list, not raw tokens: duplicates must not
+    // push a valid watchlist over the cap.
     let symbols = normalize_symbols(raw);
-    if symbols.len() >= MAX_SYMBOLS {
-        // normalize_symbols stops at the cap; a watchlist that long is
-        // truncated by the iterator, so verify the input really ended there.
-        let total = raw
-            .split(|c: char| c == ',' || c.is_whitespace())
-            .filter(|s| !s.trim().is_empty())
-            .count();
-        if total > MAX_SYMBOLS {
-            return Err(format!(
-                "watchlist exceeds {MAX_SYMBOLS} symbols ({total} given)"
-            ));
-        }
+    if symbols.len() > MAX_SYMBOLS {
+        return Err(format!(
+            "watchlist exceeds {MAX_SYMBOLS} symbols ({} given)",
+            symbols.len()
+        ));
     }
     if symbols.is_empty() {
         return Err("no symbols given; pass --symbols \"AAPL,SPY\"".to_string());
@@ -99,15 +93,16 @@ fn fetch_state(
         Err(message) => {
             // A delisted-style failure usually means the user typed an ISIN
             // or a bare company name. Ask Yahoo's search endpoint once per
-            // run what it would call this instrument instead.
+            // run what it would call this instrument instead — negative
+            // results are cached as the empty string so a permanently
+            // unresolvable symbol does not re-query every tick.
             let message = if message.contains("may be delisted") {
                 let hint = match suggestions.get(symbol) {
+                    Some(cached) if cached.is_empty() => None,
                     Some(cached) => Some(cached.clone()),
                     None => {
                         let found = yahoo::suggest_symbol(symbol);
-                        if let Some(found) = &found {
-                            suggestions.insert(symbol.to_string(), found.clone());
-                        }
+                        suggestions.insert(symbol.to_string(), found.clone().unwrap_or_default());
                         found
                     }
                 };
@@ -238,11 +233,19 @@ mod tests {
     }
 
     #[test]
-    fn normalize_symbols_truncates_at_cap() {
+    fn parse_symbols_allows_duplicates_up_to_the_cap() {
+        let mut tokens: Vec<String> = (0..MAX_SYMBOLS).map(|i| format!("SYM{i}")).collect();
+        tokens.extend((0..MAX_SYMBOLS).map(|i| format!("SYM{i}")));
+        let parsed = parse_symbols(&tokens.join(",")).unwrap();
+        assert_eq!(parsed.len(), MAX_SYMBOLS);
+    }
+
+    #[test]
+    fn normalize_symbols_keeps_every_unique_symbol() {
         let big = (0..MAX_SYMBOLS * 2)
             .map(|i| format!("SYM{i}"))
             .collect::<Vec<_>>()
             .join(",");
-        assert_eq!(normalize_symbols(&big).len(), MAX_SYMBOLS);
+        assert_eq!(normalize_symbols(&big).len(), MAX_SYMBOLS * 2);
     }
 }

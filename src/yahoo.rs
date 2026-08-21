@@ -5,7 +5,7 @@
 //! scheduling, and state live here.
 
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use serde::Deserialize;
 
@@ -124,46 +124,59 @@ fn read_capped(mut reader: impl Read, cap: u64) -> std::io::Result<(Vec<u8>, boo
     Ok((buf, overflowed))
 }
 
+/// Owns a spawned curl child and guarantees it is killed and reaped even
+/// when an intermediate read fails.
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Run curl for `url`, returning at most `cap` bytes of the body. Kills curl
 /// if it keeps writing past the cap; curl also aborts oversized bodies itself
 /// (`--max-filesize`) and is pinned to HTTPS. HTTP-level errors (4xx/5xx) are
 /// returned as bodies so callers can read API error payloads; transport
 /// failures return Err with curl's stderr detail.
 fn fetch_url(url: &str, cap: u64) -> Result<Vec<u8>, String> {
-    let mut child = Command::new("curl")
-        .args([
-            "-sS",
-            "--max-time",
-            CURL_TIMEOUT_SECS,
-            "--max-filesize",
-            &cap.to_string(),
-            "--proto",
-            "=https",
-            "-A",
-            USER_AGENT,
-            url,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("run curl: {e}"))?;
+    let mut child = ChildGuard(
+        Command::new("curl")
+            .args([
+                "-sS",
+                "--max-time",
+                CURL_TIMEOUT_SECS,
+                "--max-filesize",
+                &cap.to_string(),
+                "--proto",
+                "=https",
+                "-A",
+                USER_AGENT,
+                url,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("run curl: {e}"))?,
+    );
 
-    let stdout = child.stdout.take().ok_or("curl stdout is not piped")?;
-    let stderr = child.stderr.take().ok_or("curl stderr is not piped")?;
+    let stdout = child.0.stdout.take().ok_or("curl stdout is not piped")?;
+    let stderr = child.0.stderr.take().ok_or("curl stderr is not piped")?;
 
     let (stdout_bytes, stdout_overflowed) =
         read_capped(stdout, cap).map_err(|e| format!("read curl stdout: {e}"))?;
-    let (stderr_bytes, _) =
-        read_capped(stderr, MAX_ERROR_BYTES).map_err(|e| format!("read curl stderr: {e}"))?;
 
     if stdout_overflowed {
-        // curl is still trying to write; stop it instead of waiting it out.
-        let _ = child.kill();
-        let _ = child.wait();
+        // The guard kills curl, which EOFs both pipes immediately — no need
+        // to drain stderr here; the error message on this path is fixed.
         return Err("response exceeds size cap".to_string());
     }
 
-    let status = child.wait().map_err(|e| format!("wait for curl: {e}"))?;
+    let (stderr_bytes, _) =
+        read_capped(stderr, MAX_ERROR_BYTES).map_err(|e| format!("read curl stderr: {e}"))?;
+
+    let status = child.0.wait().map_err(|e| format!("wait for curl: {e}"))?;
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr_bytes);
         let detail = stderr.lines().last().unwrap_or("request failed");
