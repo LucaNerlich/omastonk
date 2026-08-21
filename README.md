@@ -7,7 +7,8 @@ Omastonk is a multi-symbol market widget for the Omarchy bar. It rotates
 through a watchlist of symbols, showing the current quote and daily direction
 for each, with a chart panel (one day to five years) per symbol.
 
-![Omastonk screenshot](preview.png)
+<img width="766" height="750" alt="preview" src="https://github.com/user-attachments/assets/caaef0c6-9584-4f2a-9696-2a0f2b7f0f83" />
+
 
 <img width="756" height="566" alt="screenshot-2026-08-21_10-11-24" src="https://github.com/user-attachments/assets/e0a6a192-6562-4005-baed-fe6880807a29" />
 
