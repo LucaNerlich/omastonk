@@ -28,7 +28,7 @@ enum Command {
     /// Stream watchlist quotes as JSON lines, one per fetch
     Watch {
         /// Comma- or whitespace-separated watchlist, e.g. `AAPL,SPY,BTC-USD`
-        #[arg(long, value_delimiter = ',', default_value = "")]
+        #[arg(long, default_value = "")]
         symbols: String,
         /// Seconds between refreshes of each individual symbol
         #[arg(long, default_value_t = DEFAULT_INTERVAL_SECS)]
@@ -37,7 +37,7 @@ enum Command {
     /// Print one quotes snapshot as a single JSON line and exit
     Quote {
         /// Comma- or whitespace-separated watchlist
-        #[arg(long, value_delimiter = ',', default_value = "")]
+        #[arg(long, default_value = "")]
         symbols: String,
     },
     /// Print one chart close-series as a single JSON line and exit

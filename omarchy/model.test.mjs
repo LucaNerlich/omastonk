@@ -41,6 +41,21 @@ test("settingsSymbols reads arrays and migrates legacy symbol", () => {
   assert.equal(JSON.stringify(Model.settingsSymbols(null)), "[]");
 });
 
+test("settingsSymbols accepts QML list-like values (Array.isArray is false)", () => {
+  const qmlList = { length: 2, 0: "msft", 1: "aapl" };
+  assert.equal(Array.isArray(qmlList), false);
+  assert.equal(JSON.stringify(Model.settingsSymbols({ symbols: qmlList })), JSON.stringify(["MSFT", "AAPL"]));
+});
+
+test("parseQuotesLine accepts list-like quotes", () => {
+  const line = JSON.stringify({
+    quotes: { length: 1, 0: { state: "ok", symbol: "spy", price: 1.25, change: 0.1 } }
+  });
+  const quotes = Model.parseQuotesLine(line);
+  assert.equal(quotes.SPY.status, "ready");
+  assert.equal(quotes.SPY.price, 1.25);
+});
+
 test("clampRotateSeconds bounds and disables on junk", () => {
   assert.equal(Model.clampRotateSeconds(5), 5);
   assert.equal(Model.clampRotateSeconds(0), 0);

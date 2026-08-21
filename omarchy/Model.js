@@ -5,8 +5,9 @@ function normalizeSymbol(value) {
 }
 
 function normalizeSymbols(list) {
-  var seen = {};
   var result = [];
+  if (!isList(list)) return result;
+  var seen = {};
   for (var i = 0; i < list.length; i++) {
     var value = normalizeSymbol(list[i]);
     if (value === "" || seen[value]) continue;
@@ -16,6 +17,11 @@ function normalizeSymbols(list) {
   return result;
 }
 
+// Injected shell settings hold QML lists, which Array.isArray rejects.
+function isList(value) {
+  return value !== null && typeof value === "object" && typeof value.length === "number";
+}
+
 /**
  * Settings for the widget: symbols array with legacy single-symbol fallback.
  * @param {*} settings - The inline shell.json entry values.
@@ -23,7 +29,7 @@ function normalizeSymbols(list) {
  */
 function settingsSymbols(settings) {
   var raw = settings ? settings.symbols : undefined;
-  if (Array.isArray(raw)) return normalizeSymbols(raw);
+  if (isList(raw)) return normalizeSymbols(raw);
   var legacy = normalizeSymbol(settings ? settings.symbol : "");
   return legacy === "" ? [] : [legacy];
 }
@@ -84,7 +90,7 @@ function parseQuotesLine(line) {
   } catch (e) {
     return null;
   }
-  if (parsed === null || typeof parsed !== "object" || !Array.isArray(parsed.quotes)) return null;
+  if (parsed === null || typeof parsed !== "object" || !isList(parsed.quotes)) return null;
 
   var quotes = {};
   for (var i = 0; i < parsed.quotes.length; i++) {
@@ -122,7 +128,7 @@ function parseChartLine(line) {
   }
   if (parsed === null || typeof parsed !== "object") return { state: "error", points: [] };
 
-  if (parsed.state === "ok" && Array.isArray(parsed.points)) {
+  if (parsed.state === "ok" && isList(parsed.points)) {
     var points = [];
     for (var i = 0; i < parsed.points.length; i++) {
       var value = numericValue(parsed.points[i]);

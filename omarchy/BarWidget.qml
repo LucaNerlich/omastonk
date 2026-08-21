@@ -34,9 +34,9 @@ BarWidget {
   property bool displaySymbolResolved: false
   property string watchArgs: ""
 
-  readonly property var symbols: Model.normalizeSymbols(Model.settingsSymbols(settings))
-  readonly property string savedActive: Model.normalizeSymbol(setting("activeSymbol", ""))
-  readonly property int rotateSeconds: Model.clampRotateSeconds(setting("rotateSeconds", 5))
+  readonly property var symbols: normalizeSymbols(settingsSymbols())
+  readonly property string savedActive: normalizeSymbol(setting("activeSymbol", ""))
+  readonly property int rotateSeconds: clampRotateSeconds(setting("rotateSeconds", 5))
   readonly property string instanceId: String(setting("instanceId", "")) || transientInstanceId
   readonly property var activeQuote: quotes[displaySymbol] || null
   readonly property bool quoteReady: activeQuote !== null && activeQuote.status === "ready" && isFinite(activeQuote.price)
@@ -45,6 +45,43 @@ BarWidget {
   readonly property string priceText: quoteReady ? Model.formatPrice(activeQuote.price) : (activeQuote !== null && activeQuote.status === "loading" ? "..." : "?")
   readonly property string labelText: displaySymbol === "" ? "$" : displaySymbol + " " + priceText + (trendGlyph === "" ? "" : " " + trendGlyph)
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+
+  // Property reads inside imported JS files are not tracked by QML
+  // bindings, so every function a binding depends on must live here.
+  function normalizeSymbol(value) {
+    return String(value || "").trim().toUpperCase().replace(/\s+/g, "")
+  }
+
+  // Injected settings hold QML lists, which Array.isArray rejects.
+  function isList(value) {
+    return value !== null && typeof value === "object" && typeof value.length === "number"
+  }
+
+  function normalizeSymbols(list) {
+    var result = []
+    if (!isList(list)) return result
+    var seen = {}
+    for (var i = 0; i < list.length; i++) {
+      var value = normalizeSymbol(list[i])
+      if (value === "" || seen[value]) continue
+      seen[value] = true
+      result.push(value)
+    }
+    return result
+  }
+
+  function settingsSymbols() {
+    var raw = settings ? settings.symbols : undefined
+    if (isList(raw)) return raw
+    var legacy = normalizeSymbol(setting("symbol", ""))
+    return legacy === "" ? [] : [legacy]
+  }
+
+  function clampRotateSeconds(value) {
+    var number = Number(value)
+    if (!isFinite(number) || number <= 0) return 0
+    return Math.min(Math.round(number), 3600)
+  }
 
   function generateInstanceId() {
     return "omastonk-" + Date.now().toString(36)
@@ -101,7 +138,7 @@ BarWidget {
     for (var s = 0; s < sections.length; s++) {
       var section = sections[s]
       var entries = layout[section]
-      if (!Array.isArray(entries)) continue
+      if (!isList(entries)) continue
 
       for (var i = 0; i < entries.length; i++) {
         var entry = entries[i]
@@ -119,7 +156,7 @@ BarWidget {
     // The rendered bar can reorder normalized entries; map by same-widget
     // occurrence so the first save updates the raw shell.json entry.
     var entries = layout[context.section]
-    if (!Array.isArray(entries)) return null
+    if (!isList(entries)) return null
 
     var occurrence = 0
     for (var i = 0; i < entries.length; i++) {
@@ -159,7 +196,7 @@ BarWidget {
       if (!location) return
 
       var entries = config.bar.layout[location.section]
-      if (!Array.isArray(entries) || location.index < 0 || location.index >= entries.length) return
+      if (!isList(entries) || location.index < 0 || location.index >= entries.length) return
 
       var current = entries[location.index]
       var currentId = entryId(current)
@@ -182,7 +219,7 @@ BarWidget {
   }
 
   function setSymbols(values) {
-    var nextSymbols = Model.normalizeSymbols(values)
+    var nextSymbols = normalizeSymbols(values)
     var next = settingsCopy()
     next.instanceId = instanceId || generateInstanceId()
     next.symbols = nextSymbols
@@ -191,7 +228,7 @@ BarWidget {
   }
 
   function setActiveSymbol(value) {
-    var nextSymbol = Model.normalizeSymbol(value)
+    var nextSymbol = normalizeSymbol(value)
     if (nextSymbol === "" || symbols.indexOf(nextSymbol) === -1) return
 
     displaySymbol = nextSymbol

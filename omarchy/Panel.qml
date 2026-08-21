@@ -29,7 +29,7 @@ Panel {
   readonly property color chartColor: intervalDown ? Color.bar.active : Color.bar.text
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string backendBinary: host ? host.backendBinary : "omastonk-qs"
-  readonly property var symbols: host ? host.symbols : Model.settingsSymbols(setting("symbols"))
+  readonly property var symbols: host ? host.symbols : fallbackSymbols()
   readonly property int activeIndex: symbols.indexOf(activeSymbol)
   readonly property real intervalPriceChange: chartPoints.length > 1 ? chartPoints[chartPoints.length - 1] - chartPoints[0] : NaN
   readonly property real intervalPercentChange: chartPoints.length > 1 && chartPoints[0] !== 0 ? intervalPriceChange / chartPoints[0] * 100 : NaN
@@ -52,6 +52,17 @@ Panel {
 
   function chartKey() {
     return activeSymbol + "|" + selectedIntervalLabel
+  }
+
+  // Property reads inside imported JS files are not tracked by QML
+  // bindings, so the settings fallback must live here. Injected settings
+  // hold QML lists, which Array.isArray rejects.
+  function fallbackSymbols() {
+    var raw = settings ? settings.symbols : undefined
+    if (raw !== null && typeof raw === "object" && typeof raw.length === "number")
+      return Model.normalizeSymbols(raw)
+    var legacy = Model.normalizeSymbol(setting("symbol", ""))
+    return legacy === "" ? [] : [legacy]
   }
 
   function openSymbol(symbol) {

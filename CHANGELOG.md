@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-08-21
+
+### Fixed
+
+- Backend watchlist parsing: `--symbols "A,B"` no longer drops everything
+  after the first comma (clap `value_delimiter` with a single String arg).
+- Widget settings reading: injected shell settings hold QML lists, which
+  `Array.isArray` rejects; the watchlist now survives a fresh shell start
+  instead of only updating after a manual save.
+
 ## [2.0.0] - 2026-08-21
 
 ### Added
