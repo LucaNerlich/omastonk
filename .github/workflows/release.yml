@@ -15,29 +15,42 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  OMARCHY_REF: v4.0.0
+
 jobs:
   release:
     name: verify bundle and publish GitHub release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to actions/checkout v4.4.0.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
       - name: Inspect committed ELF
         run: VERIFY_BUNDLE_SKIP_REBUILD=1 scripts/verify-bundle.sh
 
-      # ring (via ureq's rustls) compiles C for the musl target.
+      # Keep a musl-capable linker available for any future dependency that
+      # compiles C; the current crate is pure Rust.
       - name: Install musl toolchain
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      # Pin to the toolchain in rust-toolchain.toml so the check reproduces
+      # the exact binary that was committed.
+      # Pinned to dtolnay/rust-toolchain branch 1.97.1 @ 032958a.
+      - uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5
         with:
           targets: x86_64-unknown-linux-musl
 
-      - uses: Swatinem/rust-cache@v2
+      # Pinned to Swatinem/rust-cache v2.
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           key: release-verify-musl
 
       - name: Marketplace bundle checks
+        env:
+          VERIFY_BUNDLE_EVIDENCE: /tmp/rebuild-evidence.txt
         run: scripts/verify-bundle.sh
 
       - name: Package committed ELF
@@ -56,5 +69,26 @@ jobs:
             echo "$notes"
             echo
             echo "Artifact: \`$(basename "$asset")\` (statically linked musl x86_64)."
+            echo
+            if [[ -f /tmp/rebuild-evidence.txt ]]; then
+              echo "## Reproducible-build attestation"
+              echo
+              echo "Produced by the \`verify bundle and publish GitHub release\` job at commit \`${GITHUB_SHA}\`, with all third-party actions pinned to immutable commit SHAs."
+              echo
+              echo '```'
+              cat /tmp/rebuild-evidence.txt
+              tarball="$(sha256sum "$asset" | awk '{print $1}')"
+              echo "tarball_sha256=$tarball"
+              echo '```'
+              {
+                echo "## Reproducible-build attestation"
+                echo
+                echo "Fresh musl rebuild of ${GITHUB_SHA} matched the committed bundle:"
+                echo '```'
+                cat /tmp/rebuild-evidence.txt
+                echo "tarball_sha256=$tarball"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           } > /tmp/release-notes.md
           gh release create "$tag" "$asset" --title "$tag" --notes-file /tmp/release-notes.md

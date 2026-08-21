@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.6] - 2026-08-21
+
+### Changed
+
+- Supply-chain hardening for the release pipeline: every third-party GitHub
+  Action is pinned to an immutable commit SHA (actions/checkout v4.4.0,
+  dtolnay/rust-toolchain 1.97.1 branch head, Swatinem/rust-cache v2), checkouts
+  run with `persist-credentials: false`, and the release job now publishes a
+  reproducible-build attestation (source commit, committed and freshly rebuilt
+  ELF SHA-256, source id, tarball SHA-256) in the release notes.
+
 ## [2.0.5] - 2026-08-21
 
 ### Changed

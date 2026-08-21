@@ -130,4 +130,16 @@ than a forgotten rebuild. Run 'scripts/build-bundle.sh' with the pinned
 1.97.1 musl toolchain and commit the result."
 fi
 
+# Machine-readable attestation for the release workflow: the fresh rebuild's
+# identity at this exact source commit.
+if [[ -n ${VERIFY_BUNDLE_EVIDENCE:-} ]]; then
+  {
+    printf 'source_commit=%s\n' "${GITHUB_SHA:-unknown}"
+    printf 'version=%s\n' "$crate_version"
+    printf 'committed_sha256=%s\n' "$committed"
+    printf 'rebuilt_sha256=%s\n' "$actual"
+    printf 'source_id=%s\n' "$actual_srcid"
+  } > "$VERIFY_BUNDLE_EVIDENCE"
+fi
+
 echo "verified: omarchy/bin/omastonk-qs is non-stripped, version $crate_version, and matches the reproducible build ($actual)"
