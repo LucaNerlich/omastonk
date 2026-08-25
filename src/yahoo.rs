@@ -228,22 +228,71 @@ struct SearchResponse {
 #[serde(rename_all = "camelCase")]
 struct SearchQuote {
     symbol: String,
+    #[serde(default)]
+    shortname: Option<String>,
+    #[serde(default)]
+    longname: Option<String>,
     is_yahoo_finance: Option<bool>,
+}
+
+/// One Yahoo Finance search hit suitable for autocomplete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub symbol: String,
+    pub name: String,
+}
+
+/// Ask Yahoo's search endpoint for finance-listed symbols matching `query`.
+/// Best effort: empty on any failure. Cap is applied after filtering.
+pub fn search_symbols(query: &str, limit: usize) -> Vec<SearchHit> {
+    if query.trim().is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    let url = format!("{SEARCH_URL}{}&quotesCount=6&newsCount=0", urlencode(query));
+    let body = match fetch_url(&url, MAX_SEARCH_BYTES) {
+        Ok(bytes) => bytes,
+        Err(_) => return Vec::new(),
+    };
+    let parsed: SearchResponse = match serde_json::from_slice(&body) {
+        Ok(parsed) => parsed,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for quote in parsed.quotes {
+        if !quote.is_yahoo_finance.unwrap_or(false) {
+            continue;
+        }
+        let symbol = quote.symbol.trim();
+        if symbol.is_empty() {
+            continue;
+        }
+        let symbol = symbol.to_uppercase();
+        if !seen.insert(symbol.clone()) {
+            continue;
+        }
+        let name = quote
+            .shortname
+            .or(quote.longname)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        out.push(SearchHit { symbol, name });
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
 }
 
 /// Ask Yahoo's search endpoint what `query` (an ISIN, a company name, ...)
 /// refers to; returns the first finance-listed symbol other than the query
 /// itself. Best effort: `None` on any failure.
 pub fn suggest_symbol(query: &str) -> Option<String> {
-    let url = format!("{SEARCH_URL}{}&quotesCount=6&newsCount=0", urlencode(query));
-    let body = fetch_url(&url, MAX_SEARCH_BYTES).ok()?;
-    let parsed: SearchResponse = serde_json::from_slice(&body).ok()?;
-    parsed
-        .quotes
+    search_symbols(query, 6)
         .into_iter()
-        .filter(|q| q.is_yahoo_finance.unwrap_or(false))
-        .map(|q| q.symbol)
-        .find(|s| !s.is_empty() && !s.eq_ignore_ascii_case(query))
+        .map(|hit| hit.symbol)
+        .find(|s| !s.eq_ignore_ascii_case(query))
 }
 
 /// Parse a v8 chart payload. Returns `None` for anything structurally wrong
@@ -323,16 +372,26 @@ mod tests {
     fn suggest_symbol_skips_query_and_non_finance() {
         let body = r#"{"quotes":[
             {"symbol":"IE00BK5BQT80","isYahooFinance":false},
-            {"symbol":"VWRA.L","isYahooFinance":true},
+            {"symbol":"VWRA.L","shortname":"Vanguard","isYahooFinance":true},
             {"symbol":"IE00BK5BQT80.SG","isYahooFinance":true}
         ]}"#;
         let parsed: SearchResponse = serde_json::from_str(body).unwrap();
-        let found = parsed
+        let hits: Vec<SearchHit> = parsed
             .quotes
             .into_iter()
             .filter(|q| q.is_yahoo_finance.unwrap_or(false))
-            .map(|q| q.symbol)
-            .find(|s| !s.is_empty() && !s.eq_ignore_ascii_case("IE00BK5BQT80"));
+            .filter(|q| !q.symbol.is_empty())
+            .map(|q| SearchHit {
+                symbol: q.symbol.to_uppercase(),
+                name: q.shortname.or(q.longname).unwrap_or_default(),
+            })
+            .collect();
+        assert_eq!(hits[0].symbol, "VWRA.L");
+        assert_eq!(hits[0].name, "Vanguard");
+        let found = hits
+            .into_iter()
+            .map(|h| h.symbol)
+            .find(|s| !s.eq_ignore_ascii_case("IE00BK5BQT80"));
         assert_eq!(found.as_deref(), Some("VWRA.L"));
     }
 

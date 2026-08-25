@@ -26,17 +26,21 @@ BarWidget {
   property bool watchFallback: false
   property int watchFailures: 0
   readonly property string backendBinary: watchFallback ? "omastonk-qs" : bundledBinary
-  readonly property int pollIntervalSecs: 60
+  readonly property int pollIntervalSecs: Model.clampPollIntervalSecs(setting("pollIntervalSecs", 60))
 
   property var quotes: ({})
   property string transientInstanceId: ""
   property string displaySymbol: ""
   property bool displaySymbolResolved: false
   property string watchArgs: ""
+  property real lastQuoteAt: 0
+  property bool quotesStale: false
 
   readonly property var symbols: normalizeSymbols(settingsSymbols())
   readonly property string savedActive: normalizeSymbol(setting("activeSymbol", ""))
   readonly property int rotateSeconds: clampRotateSeconds(setting("rotateSeconds", 5))
+  readonly property string displayMode: Model.normalizeDisplayMode(setting("displayMode", "full"))
+  readonly property string chartInterval: Model.normalizeChartInterval(setting("chartInterval", "1D"))
   readonly property string instanceId: String(setting("instanceId", "")) || transientInstanceId
   readonly property var activeQuote: quotes[displaySymbol] || null
   readonly property bool quoteReady: activeQuote !== null && activeQuote.status === "ready" && isFinite(activeQuote.price)
@@ -45,25 +49,29 @@ BarWidget {
   readonly property string errorHint: activeQuote !== null && activeQuote.status === "error" && activeQuote.message !== ""
     ? displaySymbol + ": " + activeQuote.message
     : ""
+  readonly property string staleHint: {
+    if (symbols.length === 0) return ""
+    if (lastQuoteAt <= 0) return quotesStale ? "Waiting for quotes" : ""
+    if (!quotesStale) return ""
+    return "Updated " + Model.formatRelativeAge(Date.now() - lastQuoteAt)
+  }
+  readonly property string tooltipCombined: {
+    if (errorHint !== "") return errorHint
+    if (staleHint !== "") return staleHint
+    if (symbols.length === 0) return "Add symbols"
+    return ""
+  }
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
 
   // Property reads inside imported JS files are not tracked by QML
-  // bindings, so every function a binding depends on must live here.
+  // bindings, so every function a binding depends on must live here —
+  // wrapping Model.* so bindings re-evaluate when settings change.
   function normalizeSymbol(value) {
-    return String(value || "").trim().toUpperCase().replace(/\s+/g, "")
+    return Model.normalizeSymbol(value)
   }
 
-  // Same format as the visible bar label, for any watchlist symbol. Used by
-  // the offscreen sizer so rotation reserves the widest label up front.
   function labelForSymbol(symbol) {
-    var name = normalizeSymbol(symbol)
-    if (name === "") return "$"
-    var quote = quotes[name] || null
-    var ready = quote !== null && quote.status === "ready" && isFinite(quote.price)
-    var price = ready ? Model.formatPrice(quote.price)
-      : (quote !== null && quote.status === "loading" ? "..." : "?")
-    var glyph = ready ? (quote.change < 0 ? "\u25BC" : "\u25B2") : ""
-    return name + " " + price + (glyph === "" ? "" : " " + glyph)
+    return Model.formatBarLabel(symbol, quotes[normalizeSymbol(symbol)] || null, displayMode)
   }
 
   // Injected settings hold QML lists, which Array.isArray rejects.
@@ -72,16 +80,7 @@ BarWidget {
   }
 
   function normalizeSymbols(list) {
-    var result = []
-    if (!isList(list)) return result
-    var seen = {}
-    for (var i = 0; i < list.length; i++) {
-      var value = normalizeSymbol(list[i])
-      if (value === "" || seen[value]) continue
-      seen[value] = true
-      result.push(value)
-    }
-    return result
+    return Model.normalizeSymbols(list)
   }
 
   function settingsSymbols() {
@@ -92,9 +91,7 @@ BarWidget {
   }
 
   function clampRotateSeconds(value) {
-    var number = Number(value)
-    if (!isFinite(number) || number <= 0) return 0
-    return Math.min(Math.round(number), 3600)
+    return Model.clampRotateSeconds(value)
   }
 
   function generateInstanceId() {
@@ -252,6 +249,15 @@ BarWidget {
     saveInstanceSettings(next)
   }
 
+  function setChartInterval(label) {
+    var nextLabel = Model.normalizeChartInterval(label)
+    if (nextLabel === chartInterval) return
+    var next = settingsCopy()
+    next.instanceId = instanceId || generateInstanceId()
+    next.chartInterval = nextLabel
+    saveInstanceSettings(next)
+  }
+
   function resolveDisplaySymbol() {
     if (savedActive !== "" && symbols.indexOf(savedActive) !== -1) {
       displaySymbol = savedActive
@@ -269,10 +275,39 @@ BarWidget {
     quotes = next
   }
 
+  function quotesHaveReady(map) {
+    for (var key in map) {
+      if (map[key] && map[key].status === "ready") return true
+    }
+    return false
+  }
+
   function applyQuotesLine(line) {
     var parsed = Model.parseQuotesLine(line)
     if (parsed === null) return
     quotes = parsed
+    if (quotesHaveReady(parsed)) {
+      lastQuoteAt = Date.now()
+      quotesStale = false
+    }
+  }
+
+  function refreshStale() {
+    if (symbols.length === 0 || lastQuoteAt <= 0) {
+      quotesStale = symbols.length > 0 && !watchProc.running
+      return
+    }
+    var thresholdMs = pollIntervalSecs * 2000
+    quotesStale = (Date.now() - lastQuoteAt) > thresholdMs || !watchProc.running
+  }
+
+  function cycleDisplay(delta) {
+    if (symbols.length <= 1) return
+    var index = symbols.indexOf(displaySymbol)
+    if (index < 0) index = 0
+    var len = symbols.length
+    displaySymbol = symbols[(index + delta % len + len) % len]
+    rotateTimer.restart()
   }
 
   function restartWatch() {
@@ -282,9 +317,10 @@ BarWidget {
       watchProc.running = false
       return
     }
-    if (args === watchArgs && watchProc.running) return
+    var nextArgs = args + "|" + String(pollIntervalSecs)
+    if (nextArgs === watchArgs && watchProc.running) return
 
-    watchArgs = args
+    watchArgs = nextArgs
     watchProc.command = [backendBinary, "watch", "--symbols", args, "--interval-secs", String(pollIntervalSecs)]
     watchProc.running = false
     Qt.callLater(function() { watchProc.running = true })
@@ -335,6 +371,7 @@ BarWidget {
 
   onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()
+  onPollIntervalSecsChanged: restartWatch()
   onSymbolsChanged: {
     if (!displaySymbolResolved) resolveDisplaySymbol()
     else if (symbols.indexOf(displaySymbol) === -1) displaySymbol = symbols.length > 0 ? symbols[0] : ""
@@ -390,10 +427,12 @@ BarWidget {
       // Never leave the last snapshot looking live while the watcher is down.
       root.quotes = {}
       root.seedQuotes()
+      root.refreshStale()
       watchRestartTimer.restart()
     }
     onRunningChanged: {
       if (watchProc.running) return
+      root.refreshStale()
       var failedStart = !watchProc.startedOnce
       if (watchProc.startedOnce && watchProc.ranMs() < 1000) {
         // Spawned but died immediately: counts as a failed start too, or a
@@ -420,6 +459,14 @@ BarWidget {
     interval: 5000
     repeat: false
     onTriggered: root.restartWatch()
+  }
+
+  Timer {
+    id: staleTimer
+    interval: 5000
+    repeat: true
+    running: root.symbols.length > 0
+    onTriggered: root.refreshStale()
   }
 
   Timer {
@@ -455,12 +502,18 @@ BarWidget {
     foreground: Color.bar.text
     activeColor: Color.bar.active
     active: root.priceDown
+    dimmed: root.quotesStale
     horizontalMargin: 8.5
     verticalPadding: 6
-    tooltipText: root.errorHint !== "" ? root.errorHint : (root.symbols.length === 0 ? "Add symbols" : "")
-    onPressed: function(button) {
-      if (button === Qt.RightButton) root.openEditor()
+    tooltipText: root.tooltipCombined
+    onPressed: function(buttonCode) {
+      if (buttonCode === Qt.RightButton) root.openEditor()
+      else if (buttonCode === Qt.MiddleButton) root.cycleDisplay(1)
       else root.togglePanel()
+    }
+    onWheelMoved: function(delta) {
+      if (delta === 0) return
+      root.cycleDisplay(delta > 0 ? -1 : 1)
     }
   }
 }

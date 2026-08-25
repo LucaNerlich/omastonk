@@ -31,21 +31,25 @@ omarchy plugin update luca.omastonk
 
 Omastonk starts with an empty watchlist. Right-click it to add symbols; the
 bar rotates through them every `rotateSeconds` seconds (default 5). Left-click
-the widget to open the chart panel.
+the widget to open the chart panel. Scroll the wheel or middle-click to cycle
+symbols without opening the panel.
 
 In the chart panel:
 
 - Click a symbol tab or press `Up`/`Down` (or `J`/`K`) to switch symbols.
+- Press `1`–`9` to jump to the Nth symbol.
 - Click an interval or press `Left`/`Right` (or `H`/`L`) to switch between
-  5Y, 1Y, YTD, 6M, 1M, 5D, and 1D.
+  5Y, 1Y, YTD, 6M, 1M, 5D, and 1D (the last choice is remembered).
 - Press `Escape` to close.
 - Right-click the widget to edit the watchlist: add symbols in the field at
-  the bottom (space-separated works too), rename rows inline, and remove
-  entries with the `✕` button. Save commits whatever is typed in the add field.
+  the bottom (space-separated works too; suggestions appear as you type),
+  rename rows inline, reorder with ▲/▼, and remove entries with the `✕`
+  button. Save commits whatever is typed in the add field.
 
 Each widget instance keeps its own watchlist, so multiple instances can track
 different markets. Enable extra instances with
 `omarchy plugin enable luca.omastonk` (the manifest sets `allowMultiple`).
+Overlapping symbols share one backend poller automatically.
 
 ## Settings
 
@@ -56,23 +60,30 @@ Widget settings live inline on the entry in `~/.config/omarchy/shell.json`:
 | `symbols` | `[]` | Watchlist of market symbols to rotate through, e.g. `AAPL`, `SPY`, `BTC-USD`, `^GSPC`. A legacy single `symbol` string is migrated to this list on first save. |
 | `activeSymbol` | first symbol | Symbol shown when the widget loads. |
 | `rotateSeconds` | `5` | Seconds each symbol stays on the bar before rotating. `0` disables rotation. |
+| `displayMode` | `full` | Bar label density: `full` (symbol, price, daily %, glyph), `symbolPrice`, `priceOnly`, or `symbolOnly`. |
+| `pollIntervalSecs` | `60` | Seconds between refreshes of each individual symbol (minimum 5). |
+| `chartInterval` | `1D` | Last selected chart range (`5Y`, `1Y`, `YTD`, `6M`, `1M`, `5D`, `1D`). |
 
-Quotes are fetched from Yahoo Finance and refreshed roughly once a minute per
+Quotes are fetched from Yahoo Finance and refreshed on the poll interval per
 symbol, staggered so requests are spread out.
 
 ## Architecture
 
 - **Rust backend** (`omastonk-qs`): fetches Yahoo Finance quotes for the whole
   watchlist with staggered round-robin polling and streams JSON lines; also
-  serves the panel's chart close-series one request at a time.
+  serves chart close-series and symbol search. Multiple `watch` clients share
+  one local `serve` daemon over a Unix socket (in-process fallback if the
+  socket cannot start).
 - **QML frontend** (`omarchy/`): a `bar-widget` plugin. `BarWidget.qml` runs
   `omastonk-qs watch` once and updates from its JSON lines; `Panel.qml`
-  renders charts via `omastonk-qs chart` and owns the watchlist editor. All
-  data collection stays in Rust; the QML is pure presentation.
+  renders charts via `omastonk-qs chart`, offers `search` autocomplete, and
+  owns the watchlist editor. All data collection stays in Rust; the QML is
+  pure presentation.
 
 ```
 omastonk-qs watch ──(JSON lines)──▶ BarWidget ─▶ Panel
 omastonk-qs chart ──(JSON line)───▶ Panel
+omastonk-qs search ─(JSON line)───▶ Panel editor
 ```
 
 The plugin bundles a statically linked x86_64 musl build of its backend

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Bar display modes (`full`, `symbolPrice`, `priceOnly`, `symbolOnly`) and
+  daily percent in `full` mode; scroll wheel and middle-click cycle symbols.
+- Stale-quote dimming and tooltip when the watcher falls behind.
+- Persistable `chartInterval` and tunable `pollIntervalSecs` settings.
+- Watchlist editor: symbol cap counter (`N/64`), reorder buttons, and
+  Yahoo autocomplete via new `omastonk-qs search`.
+- Panel digit keys `1`–`9` jump to the Nth symbol; chart responses are
+  cached and neighbors are prefetched while the panel is open.
+- Shared watch daemon (`omastonk-qs serve`): multiple widget instances share
+  one Yahoo poller over a Unix socket, with in-process fallback.
+
 ## [2.0.9] - 2026-08-25
 
 ### Fixed
