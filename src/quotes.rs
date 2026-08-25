@@ -80,7 +80,7 @@ pub fn poll_tick(interval: Duration, len: usize) -> Duration {
     std::cmp::max(interval / len, MIN_TICK)
 }
 
-fn fetch_state(
+pub(crate) fn fetch_state(
     symbol: &str,
     suggestions: &mut std::collections::HashMap<String, String>,
 ) -> SymbolState {
@@ -121,14 +121,17 @@ fn fetch_state(
     }
 }
 
-/// Returns false when stdout is broken (consumer gone), so callers exit
+/// Returns false when the writer is broken (consumer gone), so callers exit
 /// instead of leaking a detached process.
-fn emit(states: &[SymbolState]) -> bool {
+pub(crate) fn emit_to(mut out: impl Write, states: &[SymbolState]) -> bool {
     let line = serde_json::to_string(&QuotesLine { quotes: states }).expect("quotes serialize");
-    let mut out = io::stdout().lock();
     let mut broken = writeln!(out, "{line}").is_err();
     broken |= out.flush().is_err();
     !broken
+}
+
+fn emit(states: &[SymbolState]) -> bool {
+    emit_to(io::stdout().lock(), states)
 }
 
 /// Poll the watchlist round-robin: with N symbols and interval I each symbol

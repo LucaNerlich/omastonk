@@ -23,6 +23,14 @@ Panel {
   property string chartErrorMessage: ""
   property string chartOutput: ""
   property string requestedChartKey: ""
+  property bool chartPrefetch: false
+  property var chartCache: ({})
+  property var prefetchQueue: []
+  property string editorError: ""
+  property var searchSuggestions: []
+  property int searchHighlight: 0
+  property string searchQuery: ""
+  property string searchOutput: ""
 
   readonly property color foreground: Color.popups.text
   readonly property color dim: Qt.darker(foreground, 1.65)
@@ -50,9 +58,17 @@ Panel {
   readonly property string intervalChangeText: chartStatus === "ready" && isFinite(intervalPriceChange)
     ? Model.formatSignedPrice(intervalPriceChange) + " (" + Model.formatSignedPercent(intervalPercentChange) + ")"
     : (chartStatus === "loading" ? "..." : "?")
+  readonly property int chartCacheTtlMs: (host && host.pollIntervalSecs ? host.pollIntervalSecs : 60) * 1000
+  readonly property int draftCount: draftSymbols.length
+  readonly property bool atSymbolCap: draftCount >= Model.MAX_SYMBOLS
+  readonly property bool searchOpen: editing && searchSuggestions.length > 0
+
+  function chartKeyFor(symbol, intervalLabel) {
+    return symbol + "|" + intervalLabel
+  }
 
   function chartKey() {
-    return activeSymbol + "|" + selectedIntervalLabel
+    return chartKeyFor(activeSymbol, selectedIntervalLabel)
   }
 
   // Property reads inside imported JS files are not tracked by QML
@@ -66,16 +82,26 @@ Panel {
     return legacy === "" ? [] : [legacy]
   }
 
+  function syncIntervalFromHost() {
+    var label = host && host.chartInterval
+      ? host.chartInterval
+      : Model.normalizeChartInterval(setting("chartInterval", "1D"))
+    intervalIndex = Model.intervalIndexForLabel(label, intervalOptions.length)
+  }
+
   function openSymbol(symbol) {
+    syncIntervalFromHost()
     var next = Model.normalizeSymbol(symbol)
     if (next !== "" && symbols.indexOf(next) !== -1) activeSymbol = next
     editing = symbols.length === 0
+    editorError = ""
+    clearSearch()
     root.controller.show()
     Qt.callLater(function() {
       if (root.editing) focusAddField()
       else {
         keyCatcher.forceActiveFocus()
-        refreshChart(true)
+        refreshChart(false)
       }
     })
   }
@@ -98,6 +124,8 @@ Panel {
 
   function editSymbols() {
     draftSymbols = symbols.slice()
+    editorError = ""
+    clearSearch()
     editing = true
     Qt.callLater(focusAddField)
   }
@@ -108,18 +136,26 @@ Panel {
   }
 
   function cancelEdit() {
+    clearSearch()
     if (symbols.length === 0) {
       root.close()
       return
     }
 
     editing = false
+    editorError = ""
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function submit() {
     addDraftSymbol(addField.text)
     var next = Model.normalizeSymbols(draftSymbols)
+    if (next.length > Model.MAX_SYMBOLS) {
+      editorError = "Watchlist exceeds " + Model.MAX_SYMBOLS + " symbols"
+      return
+    }
+    editorError = ""
+    clearSearch()
     if (host && host.setSymbols) host.setSymbols(next)
     else draftSymbols = next
 
@@ -141,11 +177,22 @@ Panel {
 
   function addDraftSymbol(value) {
     var parts = String(value || "").trim().toUpperCase().split(/\s+/)
+    var next = draftSymbols.slice()
     for (var i = 0; i < parts.length; i++) {
-      var next = Model.normalizeSymbol(parts[i])
-      if (next === "" || draftSymbols.indexOf(next) !== -1) continue
-      draftSymbols = draftSymbols.concat([next])
+      var symbol = Model.normalizeSymbol(parts[i])
+      if (symbol === "" || next.indexOf(symbol) !== -1) continue
+      if (next.length >= Model.MAX_SYMBOLS) {
+        editorError = "Watchlist is full (" + Model.MAX_SYMBOLS + "/" + Model.MAX_SYMBOLS + ")"
+        draftSymbols = next
+        addField.text = ""
+        addField.forceActiveFocus()
+        return
+      }
+      next.push(symbol)
     }
+    draftSymbols = next
+    editorError = ""
+    clearSearch()
     addField.text = ""
     addField.forceActiveFocus()
   }
@@ -157,6 +204,65 @@ Panel {
       if (i !== index) next.push(draftSymbols[i])
     }
     draftSymbols = next
+    if (draftSymbols.length < Model.MAX_SYMBOLS) editorError = ""
+  }
+
+  function moveDraftSymbol(index, delta) {
+    var target = index + delta
+    if (index < 0 || index >= draftSymbols.length) return
+    if (target < 0 || target >= draftSymbols.length) return
+    var next = draftSymbols.slice()
+    var tmp = next[index]
+    next[index] = next[target]
+    next[target] = tmp
+    draftSymbols = next
+  }
+
+  function clearSearch() {
+    searchSuggestions = []
+    searchHighlight = 0
+    searchQuery = ""
+    searchDebounce.stop()
+    searchProc.running = false
+  }
+
+  function scheduleSearch(text) {
+    searchQuery = String(text || "").trim()
+    if (searchQuery.length < 1) {
+      clearSearch()
+      return
+    }
+    searchDebounce.restart()
+  }
+
+  function runSearch() {
+    if (searchQuery.length < 1) return
+    searchProc.command = [backendBinary, "search", "--query", searchQuery]
+    searchProc.running = false
+    Qt.callLater(function() { searchProc.running = true })
+  }
+
+  function applySearch(raw) {
+    var parsed = Model.parseSearchLine(raw)
+    if (parsed.state !== "ok") {
+      searchSuggestions = []
+      return
+    }
+    var filtered = []
+    for (var i = 0; i < parsed.suggestions.length; i++) {
+      var entry = parsed.suggestions[i]
+      if (draftSymbols.indexOf(entry.symbol) !== -1) continue
+      filtered.push(entry)
+    }
+    searchSuggestions = filtered
+    searchHighlight = 0
+  }
+
+  function acceptSearchHighlight() {
+    if (searchSuggestions.length === 0) return false
+    var index = Math.max(0, Math.min(searchHighlight, searchSuggestions.length - 1))
+    addDraftSymbol(searchSuggestions[index].symbol)
+    return true
   }
 
   function selectSymbol(index) {
@@ -165,7 +271,7 @@ Panel {
     if (symbols[next] === activeSymbol) return
     activeSymbol = symbols[next]
     if (host && host.setActiveSymbol) host.setActiveSymbol(activeSymbol)
-    refreshChart(true)
+    refreshChart(false)
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -178,7 +284,9 @@ Panel {
     var next = Model.clampIntervalIndex(index, intervalOptions.length)
     if (next === intervalIndex) return
     intervalIndex = next
-    refreshChart(true)
+    var label = intervalOptions[next] ? intervalOptions[next].label : "1D"
+    if (host && host.setChartInterval) host.setChartInterval(label)
+    refreshChart(false)
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -186,29 +294,119 @@ Panel {
     selectInterval(intervalIndex + delta)
   }
 
-  function refreshChart(force) {
-    if (editing || activeSymbol === "" || chartProc.running) return
-    if (!force && chartStatus === "ready" && requestedChartKey === chartKey()) return
+  function cacheGet(key) {
+    var entry = chartCache[key]
+    if (!entry || entry.status !== "ready") return null
+    if ((Date.now() - entry.at) > chartCacheTtlMs) return null
+    return entry
+  }
 
-    chartPoints = []
+  function cachePut(key, points, status, message) {
+    var next = {}
+    for (var existing in chartCache) next[existing] = chartCache[existing]
+    next[key] = {
+      points: points,
+      status: status,
+      message: message || "",
+      at: Date.now()
+    }
+    chartCache = next
+  }
+
+  function enqueuePrefetch() {
+    if (!opened || editing || activeSymbol === "" || symbols.length === 0) return
+    var neighbors = []
+    if (activeIndex >= 0) {
+      if (symbols.length > 1) {
+        neighbors.push(symbols[(activeIndex + 1) % symbols.length])
+        if (symbols.length > 2)
+          neighbors.push(symbols[(activeIndex - 1 + symbols.length) % symbols.length])
+      }
+    }
+    var queue = prefetchQueue.slice()
+    for (var i = 0; i < neighbors.length; i++) {
+      var key = chartKeyFor(neighbors[i], selectedIntervalLabel)
+      if (neighbors[i] === activeSymbol) continue
+      if (cacheGet(key)) continue
+      if (queue.indexOf(key) !== -1) continue
+      queue.push(key)
+    }
+    prefetchQueue = queue
+    pumpPrefetch()
+  }
+
+  function pumpPrefetch() {
+    if (chartProc.running || editing || !opened) return
+    while (prefetchQueue.length > 0) {
+      var key = prefetchQueue[0]
+      prefetchQueue = prefetchQueue.slice(1)
+      if (cacheGet(key)) continue
+      var parts = key.split("|")
+      if (parts.length < 2) continue
+      startChartFetch(parts[0], parts[1], true)
+      return
+    }
+  }
+
+  function startChartFetch(symbol, intervalLabel, isPrefetch) {
+    var option = null
+    for (var i = 0; i < intervalOptions.length; i++) {
+      if (intervalOptions[i].label === intervalLabel) {
+        option = intervalOptions[i]
+        break
+      }
+    }
+    if (!option) option = selectedInterval || intervalOptions[0]
+    chartPrefetch = isPrefetch === true
+    requestedChartKey = chartKeyFor(symbol, option.label)
+    if (!chartPrefetch) {
+      chartPoints = []
+      chartStatus = "loading"
+      chartErrorMessage = ""
+    }
     chartOutput = ""
-    requestedChartKey = chartKey()
-    chartStatus = "loading"
-    chartErrorMessage = ""
-    var option = selectedInterval || intervalOptions[0]
-    chartProc.command = [backendBinary, "chart", "--symbol", activeSymbol, "--range", option.range, "--interval", option.interval]
+    chartProc.command = [backendBinary, "chart", "--symbol", symbol, "--range", option.range, "--interval", option.interval]
     chartProc.running = true
     chartWatchdog.restart()
   }
 
+  function refreshChart(force) {
+    if (editing || activeSymbol === "" || chartProc.running) return
+    var key = chartKey()
+    if (!force) {
+      var cached = cacheGet(key)
+      if (cached) {
+        chartPoints = cached.points
+        chartStatus = "ready"
+        chartErrorMessage = ""
+        requestedChartKey = key
+        Qt.callLater(enqueuePrefetch)
+        return
+      }
+      if (chartStatus === "ready" && requestedChartKey === key) return
+    }
+
+    startChartFetch(activeSymbol, selectedIntervalLabel, false)
+  }
+
   function applyChart(raw) {
     var parsed = Model.parseChartLine(raw)
+    var key = requestedChartKey
+    var status = parsed.state === "ok" ? "ready" : "error"
+    cachePut(key, parsed.points, status, parsed.message || "")
+    if (chartPrefetch) {
+      chartPrefetch = false
+      Qt.callLater(pumpPrefetch)
+      return
+    }
     chartPoints = parsed.points
-    chartStatus = parsed.state === "ok" ? "ready" : "error"
+    chartStatus = status
     chartErrorMessage = parsed.message || ""
+    if (status === "ready") Qt.callLater(enqueuePrefetch)
   }
 
   onHostChanged: {
+    syncIntervalFromHost()
     if (host && symbols.length > 0 && symbols.indexOf(activeSymbol) === -1) activeSymbol = symbols[0]
   }
 
@@ -220,10 +418,20 @@ Panel {
   }
 
   onActiveSymbolChanged: {
+    if (chartPrefetch) return
+    var cached = cacheGet(chartKey())
+    if (cached) {
+      chartPoints = cached.points
+      chartStatus = "ready"
+      chartErrorMessage = ""
+      requestedChartKey = chartKey()
+      if (opened && !editing) Qt.callLater(enqueuePrefetch)
+      return
+    }
     chartPoints = []
     chartStatus = "idle"
     chartErrorMessage = ""
-    if (opened && !editing && activeSymbol !== "") Qt.callLater(function() { refreshChart(true) })
+    if (opened && !editing && activeSymbol !== "") Qt.callLater(function() { refreshChart(false) })
   }
 
   onChartPointsChanged: chartCanvas.requestPaint()
@@ -238,14 +446,27 @@ Panel {
     }
     onExited: function(exitCode) {
       chartWatchdog.stop()
-      if (root.requestedChartKey !== root.chartKey()) {
+      if (!root.chartPrefetch && root.requestedChartKey !== root.chartKey()) {
         root.chartOutput = ""
+        root.chartPrefetch = false
         if (root.opened && !root.editing && root.activeSymbol !== "") Qt.callLater(function() { root.refreshChart(true) })
         return
       }
 
       root.applyChart(root.chartOutput)
       root.chartOutput = ""
+    }
+  }
+
+  Process {
+    id: searchProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.searchOutput = text
+    }
+    onExited: function(exitCode) {
+      root.applySearch(root.searchOutput)
+      root.searchOutput = ""
     }
   }
 
@@ -256,12 +477,25 @@ Panel {
     id: chartWatchdog
     interval: 10000
     onTriggered: {
+      if (root.chartPrefetch) {
+        chartProc.running = false
+        root.chartPrefetch = false
+        Qt.callLater(root.pumpPrefetch)
+        return
+      }
       if (root.chartStatus !== "loading") return
       chartProc.running = false
       root.chartPoints = []
       root.chartStatus = "error"
       root.chartErrorMessage = "Backend unavailable"
     }
+  }
+
+  Timer {
+    id: searchDebounce
+    interval: 200
+    repeat: false
+    onTriggered: root.runSearch()
   }
 
   Row {
@@ -335,6 +569,11 @@ Panel {
         else if (dy > 0) root.moveSymbol(1)
       }
       onCloseRequested: root.close()
+      onTextKey: function(text) {
+        if (!/^[1-9]$/.test(text)) return
+        var index = Number(text) - 1
+        if (index < root.symbols.length) root.selectSymbol(index)
+      }
 
       Column {
         id: chartColumn
@@ -516,7 +755,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "Symbols"
+          text: "Symbols (" + root.draftCount + "/" + Model.MAX_SYMBOLS + ")"
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.title
@@ -541,7 +780,7 @@ Panel {
               spacing: Style.space(8)
 
               TextField {
-                width: parent.width - removeButton.implicitWidth - parent.spacing
+                width: parent.width - upButton.implicitWidth - downButton.implicitWidth - removeButton.implicitWidth - parent.spacing * 3
                 text: modelData
                 foreground: root.foreground
                 onTextChanged: {
@@ -549,6 +788,38 @@ Panel {
                   if (root.draftSymbols[index] !== next) root.draftSymbols[index] = next
                 }
                 Keys.onEscapePressed: root.cancelEdit()
+                Keys.onPressed: function(event) {
+                  if (!(event.modifiers & Qt.AltModifier)) return
+                  if (event.key === Qt.Key_Up) {
+                    root.moveDraftSymbol(index, -1)
+                    event.accepted = true
+                  } else if (event.key === Qt.Key_Down) {
+                    root.moveDraftSymbol(index, 1)
+                    event.accepted = true
+                  }
+                }
+              }
+
+              Button {
+                id: upButton
+                text: "\u25B2"
+                tooltipText: "Move up"
+                foreground: root.dim
+                accent: root.dim
+                horizontalPadding: Style.space(8)
+                verticalPadding: Style.space(5)
+                onClicked: root.moveDraftSymbol(index, -1)
+              }
+
+              Button {
+                id: downButton
+                text: "\u25BC"
+                tooltipText: "Move down"
+                foreground: root.dim
+                accent: root.dim
+                horizontalPadding: Style.space(8)
+                verticalPadding: Style.space(5)
+                onClicked: root.moveDraftSymbol(index, 1)
               }
 
               Button {
@@ -565,14 +836,73 @@ Panel {
           }
         }
 
-        TextField {
-          id: addField
+        Column {
           width: parent.width
-          text: ""
-          placeholderText: "AAPL SPY BTC-USD"
-          foreground: root.foreground
-          onAccepted: root.addDraftSymbol(text)
-          Keys.onEscapePressed: root.cancelEdit()
+          spacing: Style.space(4)
+
+          TextField {
+            id: addField
+            width: parent.width
+            text: ""
+            placeholderText: "AAPL SPY BTC-USD"
+            foreground: root.foreground
+            onTextChanged: root.scheduleSearch(text)
+            onAccepted: {
+              if (root.acceptSearchHighlight()) return
+              root.addDraftSymbol(text)
+            }
+            Keys.onEscapePressed: function(event) {
+              if (root.searchOpen) {
+                root.clearSearch()
+                event.accepted = true
+                return
+              }
+              root.cancelEdit()
+            }
+            Keys.onPressed: function(event) {
+              if (!root.searchOpen) return
+              if (event.key === Qt.Key_Down) {
+                root.searchHighlight = Math.min(root.searchHighlight + 1, root.searchSuggestions.length - 1)
+                event.accepted = true
+              } else if (event.key === Qt.Key_Up) {
+                root.searchHighlight = Math.max(root.searchHighlight - 1, 0)
+                event.accepted = true
+              }
+            }
+          }
+
+          Column {
+            width: parent.width
+            visible: root.searchOpen
+            spacing: Style.space(2)
+
+            Repeater {
+              model: root.searchSuggestions
+
+              Button {
+                required property var modelData
+                required property int index
+                width: parent.width
+                text: modelData.name !== "" ? modelData.symbol + " — " + modelData.name : modelData.symbol
+                selected: index === root.searchHighlight
+                foreground: index === root.searchHighlight ? root.chartColor : root.dim
+                accent: root.chartColor
+                horizontalPadding: Style.space(8)
+                verticalPadding: Style.space(5)
+                onClicked: root.addDraftSymbol(modelData.symbol)
+              }
+            }
+          }
+        }
+
+        Text {
+          width: parent.width
+          visible: root.editorError !== ""
+          text: root.editorError
+          color: Color.bar.active
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          wrapMode: Text.Wrap
         }
 
         Row {
@@ -583,6 +913,7 @@ Panel {
             text: "Add"
             foreground: root.foreground
             accent: Color.accent
+            enabled: !root.atSymbolCap
             onClicked: root.addDraftSymbol(addField.text)
           }
 

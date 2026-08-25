@@ -19,7 +19,10 @@
     "defaults": {
       "symbols": [],
       "activeSymbol": "",
-      "rotateSeconds": 5
+      "rotateSeconds": 5,
+      "displayMode": "full",
+      "pollIntervalSecs": 60,
+      "chartInterval": "1D"
     },
     "schema": [
       {
@@ -42,6 +45,27 @@
         "label": "Rotate seconds",
         "description": "Seconds each symbol stays on the bar before rotating. 0 disables rotation.",
         "defaultValue": 5
+      },
+      {
+        "key": "displayMode",
+        "type": "string",
+        "label": "Display mode",
+        "description": "Bar label density: full (symbol price percent glyph), symbolPrice, priceOnly, or symbolOnly.",
+        "defaultValue": "full"
+      },
+      {
+        "key": "pollIntervalSecs",
+        "type": "int",
+        "label": "Poll interval seconds",
+        "description": "Seconds between refreshes of each individual symbol (minimum 5).",
+        "defaultValue": 60
+      },
+      {
+        "key": "chartInterval",
+        "type": "string",
+        "label": "Chart interval",
+        "description": "Last selected chart range label: 5Y, 1Y, YTD, 6M, 1M, 5D, or 1D.",
+        "defaultValue": "1D"
       }
     ]
   }

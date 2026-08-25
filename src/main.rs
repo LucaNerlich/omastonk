@@ -8,6 +8,8 @@ use clap::{Parser, Subcommand};
 
 use omastonk_qs::chart;
 use omastonk_qs::quotes::{self, QuotesLine};
+use omastonk_qs::search;
+use omastonk_qs::serve;
 
 const DEFAULT_INTERVAL_SECS: u64 = 60;
 
@@ -52,6 +54,15 @@ enum Command {
         #[arg(long)]
         interval: String,
     },
+    /// Print symbol search suggestions as a single JSON line and exit
+    Search {
+        /// Free-text query (ticker fragment, company name, ISIN, ...)
+        #[arg(long)]
+        query: String,
+    },
+    /// Run the shared watch daemon (usually started automatically by `watch`)
+    #[command(hide = true)]
+    Serve,
 }
 
 /// Emit failures as JSON on stdout so the QML side can render every outcome,
@@ -80,7 +91,7 @@ fn main() -> ExitCode {
             interval_secs,
         } => match quotes::parse_symbols(&symbols) {
             Ok(symbols) => {
-                quotes::watch(&symbols, Duration::from_secs(interval_secs));
+                serve::watch_shared(&symbols, Duration::from_secs(interval_secs));
                 // stdout closed: the shell is gone.
                 ExitCode::from(0)
             }
@@ -99,6 +110,14 @@ fn main() -> ExitCode {
             interval,
         } => {
             chart::chart_once(&symbol.to_uppercase(), &range, &interval);
+            ExitCode::from(0)
+        }
+        Command::Search { query } => {
+            search::search_once(&query);
+            ExitCode::from(0)
+        }
+        Command::Serve => {
+            serve::run();
             ExitCode::from(0)
         }
     }

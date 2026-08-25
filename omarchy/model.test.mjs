@@ -100,6 +100,67 @@ test("signed formatting keeps the sign out of digits", () => {
   assert.equal(Model.formatSignedPercent(NaN), "?");
 });
 
+test("percentChange derives daily percent from absolute change", () => {
+  assert.equal(Model.percentChange(110, 10), 10);
+  assert.equal(Model.percentChange(90, -10), -10);
+  assert.ok(Number.isNaN(Model.percentChange(5, 5)));
+  assert.ok(Number.isNaN(Model.percentChange(NaN, 1)));
+});
+
+test("normalizeDisplayMode accepts known modes", () => {
+  assert.equal(Model.normalizeDisplayMode("full"), "full");
+  assert.equal(Model.normalizeDisplayMode("priceOnly"), "priceOnly");
+  assert.equal(Model.normalizeDisplayMode("nope"), "full");
+});
+
+test("formatBarLabel respects display modes", () => {
+  const quote = { price: 110, change: 10, status: "ready" };
+  assert.equal(Model.formatBarLabel("aapl", quote, "symbolOnly"), "AAPL");
+  assert.match(Model.formatBarLabel("aapl", quote, "priceOnly"), /^110\.00 /);
+  assert.match(Model.formatBarLabel("aapl", quote, "symbolPrice"), /^AAPL 110\.00 /);
+  const full = Model.formatBarLabel("aapl", quote, "full");
+  assert.match(full, /^AAPL 110\.00 \+10\.00% /);
+});
+
+test("clampPollIntervalSecs bounds junk", () => {
+  assert.equal(Model.clampPollIntervalSecs(60), 60);
+  assert.equal(Model.clampPollIntervalSecs(1), 5);
+  assert.equal(Model.clampPollIntervalSecs(99999), 3600);
+  assert.equal(Model.clampPollIntervalSecs("x"), 60);
+});
+
+test("chart interval helpers round-trip labels", () => {
+  assert.equal(Model.normalizeChartInterval("1d"), "1D");
+  assert.equal(Model.normalizeChartInterval("nope"), "1D");
+  assert.equal(Model.intervalIndexForLabel("5Y", 7), 0);
+  assert.equal(Model.intervalIndexForLabel("1D", 7), 6);
+});
+
+test("formatRelativeAge humanizes durations", () => {
+  assert.equal(Model.formatRelativeAge(1500), "1s ago");
+  assert.equal(Model.formatRelativeAge(120000), "2m ago");
+  assert.equal(Model.formatRelativeAge(7200000), "2h ago");
+});
+
+test("MAX_SYMBOLS mirrors the backend cap", () => {
+  assert.equal(Model.MAX_SYMBOLS, 64);
+});
+
+test("parseSearchLine maps suggestions", () => {
+  const line = JSON.stringify({
+    state: "ok",
+    suggestions: [
+      { symbol: "vwra.l", name: "Vanguard" },
+      { symbol: "", name: "skip" }
+    ]
+  });
+  const parsed = Model.parseSearchLine(line);
+  assert.equal(parsed.state, "ok");
+  assert.equal(parsed.suggestions.length, 1);
+  assert.equal(parsed.suggestions[0].symbol, "VWRA.L");
+  assert.equal(parsed.suggestions[0].name, "Vanguard");
+});
+
 test("clampIntervalIndex wraps into range", () => {
   const count = 7;
   assert.equal(Model.clampIntervalIndex(0, count), 0);
