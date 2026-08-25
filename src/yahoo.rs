@@ -273,10 +273,19 @@ pub fn search_symbols(query: &str, limit: usize) -> Vec<SearchHit> {
         }
         let name = quote
             .shortname
-            .or(quote.longname)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                quote
+                    .longname
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
         out.push(SearchHit { symbol, name });
         if out.len() >= limit {
             break;
@@ -369,11 +378,10 @@ mod tests {
     }
 
     #[test]
-    fn suggest_symbol_skips_query_and_non_finance() {
+    fn search_symbols_skips_blank_shortname() {
         let body = r#"{"quotes":[
-            {"symbol":"IE00BK5BQT80","isYahooFinance":false},
-            {"symbol":"VWRA.L","shortname":"Vanguard","isYahooFinance":true},
-            {"symbol":"IE00BK5BQT80.SG","isYahooFinance":true}
+            {"symbol":"AAA","shortname":"   ","longname":"Alpha Long","isYahooFinance":true},
+            {"symbol":"BBB","shortname":"Beta","longname":"Beta Long","isYahooFinance":true}
         ]}"#;
         let parsed: SearchResponse = serde_json::from_str(body).unwrap();
         let hits: Vec<SearchHit> = parsed
@@ -381,18 +389,29 @@ mod tests {
             .into_iter()
             .filter(|q| q.is_yahoo_finance.unwrap_or(false))
             .filter(|q| !q.symbol.is_empty())
-            .map(|q| SearchHit {
-                symbol: q.symbol.to_uppercase(),
-                name: q.shortname.or(q.longname).unwrap_or_default(),
+            .map(|q| {
+                let name = q
+                    .shortname
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        q.longname
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default();
+                SearchHit {
+                    symbol: q.symbol.to_uppercase(),
+                    name,
+                }
             })
             .collect();
-        assert_eq!(hits[0].symbol, "VWRA.L");
-        assert_eq!(hits[0].name, "Vanguard");
-        let found = hits
-            .into_iter()
-            .map(|h| h.symbol)
-            .find(|s| !s.eq_ignore_ascii_case("IE00BK5BQT80"));
-        assert_eq!(found.as_deref(), Some("VWRA.L"));
+        assert_eq!(hits[0].name, "Alpha Long");
+        assert_eq!(hits[1].name, "Beta");
     }
 
     #[test]

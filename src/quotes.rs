@@ -1,6 +1,6 @@
 //! Watchlist quote state and the staggered round-robin poller.
 
-use std::io::{self, Write};
+use std::io::{self, ErrorKind, Write};
 use std::thread;
 use std::time::Duration;
 
@@ -121,13 +121,50 @@ pub(crate) fn fetch_state(
     }
 }
 
+/// Outcome of a non-blocking write of a pending buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteOutcome {
+    /// All buffered bytes were written (and flushed when possible).
+    Done,
+    /// Socket would block; remaining bytes stay in the buffer for later.
+    Pending,
+    /// Peer closed or a fatal write error occurred.
+    Closed,
+}
+
+/// Write as much of `buf` as possible without blocking. Drains successfully
+/// written prefix from `buf`.
+pub(crate) fn write_buf(out: &mut impl Write, buf: &mut Vec<u8>) -> WriteOutcome {
+    while !buf.is_empty() {
+        match out.write(buf) {
+            Ok(0) => return WriteOutcome::Closed,
+            Ok(n) => {
+                buf.drain(..n);
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => return WriteOutcome::Pending,
+            Err(_) => return WriteOutcome::Closed,
+        }
+    }
+    match out.flush() {
+        Ok(()) => WriteOutcome::Done,
+        Err(err) if err.kind() == ErrorKind::WouldBlock => WriteOutcome::Pending,
+        Err(err) if err.kind() == ErrorKind::Interrupted => WriteOutcome::Done,
+        Err(_) => WriteOutcome::Closed,
+    }
+}
+
+pub(crate) fn quotes_line_bytes(states: &[SymbolState]) -> Vec<u8> {
+    let mut line = serde_json::to_string(&QuotesLine { quotes: states }).expect("quotes serialize");
+    line.push('\n');
+    line.into_bytes()
+}
+
 /// Returns false when the writer is broken (consumer gone), so callers exit
 /// instead of leaking a detached process.
 pub(crate) fn emit_to(mut out: impl Write, states: &[SymbolState]) -> bool {
-    let line = serde_json::to_string(&QuotesLine { quotes: states }).expect("quotes serialize");
-    let mut broken = writeln!(out, "{line}").is_err();
-    broken |= out.flush().is_err();
-    !broken
+    let mut buf = quotes_line_bytes(states);
+    !matches!(write_buf(&mut out, &mut buf), WriteOutcome::Closed)
 }
 
 fn emit(states: &[SymbolState]) -> bool {

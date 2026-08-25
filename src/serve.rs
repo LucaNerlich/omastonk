@@ -10,22 +10,27 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::quotes::{self, MAX_SYMBOLS, SymbolState};
+use crate::quotes::{self, MAX_SYMBOLS, SymbolState, WriteOutcome};
 
 const GRACE: Duration = Duration::from_secs(2);
 const SLICE: Duration = Duration::from_millis(50);
 const CONNECT_TRIES: u32 = 40;
 const CONNECT_WAIT: Duration = Duration::from_millis(50);
+const MAX_DRAIN_READS: usize = 32;
+const MAX_DRAIN_BYTES: usize = 64 * 1024;
+
+static CLIENT_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Deserialize)]
 struct ClientMessage {
@@ -44,6 +49,7 @@ struct Client {
     interval_secs: u64,
     stream: UnixStream,
     reader: BufReader<UnixStream>,
+    pending: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -103,6 +109,15 @@ fn ensure_runtime_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+fn next_client_id() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let seq = CLIENT_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("client-{millis}-{seq}")
+}
+
 /// Try to take the exclusive serve lock. Returns the lock file handle on success.
 fn try_lock() -> Option<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -115,8 +130,10 @@ fn try_lock() -> Option<fs::File> {
         .mode(0o600)
         .open(&path)
         .ok()?;
-    // flock exclusive non-blocking via nix-less libc fcntl is messy; use
-    // create-new pid file race instead: write pid only if we also bind the socket.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return None;
+    }
     Some(file)
 }
 
@@ -181,15 +198,14 @@ fn accept_loop(listener: UnixListener, registry: Arc<Mutex<Registry>>, running: 
                             seen.len()
                         };
                         if union_count > MAX_SYMBOLS {
-                            let _ = quotes::emit_to(
-                                &mut client.stream,
-                                &[SymbolState::Error {
-                                    symbol: String::new(),
-                                    message: format!(
-                                        "watchlist exceeds {MAX_SYMBOLS} symbols across instances ({union_count} given)"
-                                    ),
-                                }],
+                            let msg = format!(
+                                "watchlist exceeds {MAX_SYMBOLS} symbols across instances ({union_count} given)"
                             );
+                            client.pending = quotes::quotes_line_bytes(&[SymbolState::Error {
+                                symbol: String::new(),
+                                message: msg,
+                            }]);
+                            let _ = quotes::write_buf(&mut client.stream, &mut client.pending);
                             continue;
                         }
                         guard.clients.insert(client.id.clone(), client);
@@ -226,7 +242,7 @@ fn read_subscribe(stream: &UnixStream) -> Result<Client, String> {
     }
     let symbols = quotes::parse_symbols(&msg.symbols.join(","))?;
     let id = if msg.id.trim().is_empty() {
-        format!("client-{}", Instant::now().elapsed().as_nanos())
+        next_client_id()
     } else {
         msg.id
     };
@@ -241,6 +257,7 @@ fn read_subscribe(stream: &UnixStream) -> Result<Client, String> {
         },
         stream: writer,
         reader,
+        pending: Vec::new(),
     })
 }
 
@@ -300,6 +317,9 @@ fn poll_loop(registry: Arc<Mutex<Registry>>, running: Arc<AtomicBool>) {
             cursor = (cursor + 1) % symbols.len();
             broadcast(&registry, &states);
             next_tick = Instant::now() + quotes::poll_tick(interval, symbols.len());
+        } else {
+            // Keep draining pending output between Yahoo ticks.
+            flush_pending(&registry);
         }
 
         thread::sleep(SLICE);
@@ -307,19 +327,28 @@ fn poll_loop(registry: Arc<Mutex<Registry>>, running: Arc<AtomicBool>) {
 }
 
 fn prune_clients(registry: &Mutex<Registry>) {
-    // Disconnects are detected when broadcast writes fail. Drain any
-    // inbound bytes so a chatty client cannot fill its send buffer forever.
+    // Disconnects are also detected when buffered writes fail. Drain any
+    // inbound bytes so a chatty client cannot fill its send buffer forever,
+    // but bound the work per pass so one flood cannot stall the poller.
     let mut guard = registry.lock().expect("registry");
     let mut dead = Vec::new();
     for (id, client) in guard.clients.iter_mut() {
         let mut buf = [0u8; 256];
+        let mut reads = 0usize;
+        let mut drained = 0usize;
         loop {
+            if reads >= MAX_DRAIN_READS || drained >= MAX_DRAIN_BYTES {
+                break;
+            }
             match client.reader.get_mut().read(&mut buf) {
                 Ok(0) => {
                     dead.push(id.clone());
                     break;
                 }
-                Ok(_) => continue,
+                Ok(n) => {
+                    reads += 1;
+                    drained += n;
+                }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => break,
                 Err(err) if err.kind() == ErrorKind::Interrupted => continue,
                 Err(_) => {
@@ -327,6 +356,23 @@ fn prune_clients(registry: &Mutex<Registry>) {
                     break;
                 }
             }
+        }
+    }
+    for id in dead {
+        guard.clients.remove(&id);
+    }
+}
+
+fn flush_pending(registry: &Mutex<Registry>) {
+    let mut guard = registry.lock().expect("registry");
+    let mut dead = Vec::new();
+    for (id, client) in guard.clients.iter_mut() {
+        if client.pending.is_empty() {
+            continue;
+        }
+        match quotes::write_buf(&mut client.stream, &mut client.pending) {
+            WriteOutcome::Closed => dead.push(id.clone()),
+            WriteOutcome::Done | WriteOutcome::Pending => {}
         }
     }
     for id in dead {
@@ -351,8 +397,14 @@ fn broadcast(registry: &Mutex<Registry>, states: &HashMap<String, SymbolState>) 
                     })
             })
             .collect();
-        if !quotes::emit_to(&mut client.stream, &snapshot) {
-            dead.push(id.clone());
+
+        // Quotes are full snapshots: drop any unsent older line and queue the
+        // latest, then write as much as the nonblocking socket will take.
+        let _ = quotes::write_buf(&mut client.stream, &mut client.pending);
+        client.pending = quotes::quotes_line_bytes(&snapshot);
+        match quotes::write_buf(&mut client.stream, &mut client.pending) {
+            WriteOutcome::Closed => dead.push(id.clone()),
+            WriteOutcome::Done | WriteOutcome::Pending => {}
         }
     }
     for id in dead {
@@ -428,6 +480,20 @@ fn try_watch_client(symbols: &[String], interval: Duration) -> bool {
 mod tests {
     use super::*;
 
+    fn test_client(id: &str, symbols: &[&str], interval_secs: u64) -> Client {
+        let (stream, _peer) = UnixStream::pair().expect("pair");
+        stream.set_nonblocking(true).expect("nonblocking");
+        let reader_stream = stream.try_clone().expect("clone");
+        Client {
+            id: id.to_string(),
+            symbols: symbols.iter().map(|s| (*s).to_string()).collect(),
+            interval_secs,
+            stream,
+            reader: BufReader::new(reader_stream),
+            pending: Vec::new(),
+        }
+    }
+
     #[test]
     fn runtime_dir_is_namespaced() {
         let dir = runtime_dir();
@@ -436,10 +502,39 @@ mod tests {
 
     #[test]
     fn registry_unions_and_mins_interval() {
-        // Build without real sockets: unit-test the pure helpers via temporary clients
-        // is awkward; cover parse path instead.
-        let symbols = quotes::normalize_symbols("AAPL,SPY,AAPL");
-        assert_eq!(symbols, vec!["AAPL".to_string(), "SPY".to_string()]);
-        assert!(quotes::poll_tick(Duration::from_secs(60), 2) >= Duration::from_secs(2));
+        let mut registry = Registry::default();
+        assert_eq!(registry.min_interval(), Duration::from_secs(60));
+        assert!(registry.union_symbols().is_empty());
+
+        registry.clients.insert(
+            "a".into(),
+            test_client("a", &["AAPL", "SPY"], 0), // clamps to 1 via max(1) in min_interval
+        );
+        registry
+            .clients
+            .insert("b".into(), test_client("b", &["SPY", "BTC-USD"], 30));
+
+        let mut union = registry.union_symbols();
+        union.sort();
+        assert_eq!(
+            union,
+            vec!["AAPL".to_string(), "BTC-USD".to_string(), "SPY".to_string()]
+        );
+        // Client a has interval_secs 0 → treated as 1; min across clients is 1.
+        assert_eq!(registry.min_interval(), Duration::from_secs(1));
+
+        registry
+            .clients
+            .insert("c".into(), test_client("c", &["AAPL"], 120));
+        assert_eq!(registry.min_interval(), Duration::from_secs(1));
+        registry.clients.remove("a");
+        assert_eq!(registry.min_interval(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn next_client_id_is_unique() {
+        let a = next_client_id();
+        let b = next_client_id();
+        assert_ne!(a, b);
     }
 }

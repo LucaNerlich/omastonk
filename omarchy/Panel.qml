@@ -23,6 +23,7 @@ Panel {
   property string chartErrorMessage: ""
   property string chartOutput: ""
   property string requestedChartKey: ""
+  property string prefetchChartKey: ""
   property bool chartPrefetch: false
   property var chartCache: ({})
   property var prefetchQueue: []
@@ -35,7 +36,9 @@ Panel {
   readonly property color foreground: Color.popups.text
   readonly property color dim: Qt.darker(foreground, 1.65)
   readonly property bool intervalDown: chartPoints.length > 1 && chartPoints[chartPoints.length - 1] < chartPoints[0]
-  readonly property color chartColor: intervalDown ? Color.bar.active : Color.bar.text
+  readonly property bool intervalUp: chartPoints.length > 1 && chartPoints[chartPoints.length - 1] > chartPoints[0]
+  readonly property color upColor: host && host.upColor !== undefined ? host.upColor : "#6a9f72"
+  readonly property color chartColor: intervalDown ? Color.bar.active : (intervalUp ? upColor : Color.bar.text)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string backendBinary: host ? host.backendBinary : "omastonk-qs"
   readonly property var symbols: host ? host.symbols : fallbackSymbols()
@@ -348,6 +351,14 @@ Panel {
     }
   }
 
+  function cancelPrefetchIfRunning() {
+    if (!chartProc.running || !chartPrefetch) return
+    chartProc.running = false
+    chartPrefetch = false
+    prefetchChartKey = ""
+    chartWatchdog.stop()
+  }
+
   function startChartFetch(symbol, intervalLabel, isPrefetch) {
     var option = null
     for (var i = 0; i < intervalOptions.length; i++) {
@@ -357,21 +368,26 @@ Panel {
       }
     }
     if (!option) option = selectedInterval || intervalOptions[0]
-    chartPrefetch = isPrefetch === true
-    requestedChartKey = chartKeyFor(symbol, option.label)
-    if (!chartPrefetch) {
+    var key = chartKeyFor(symbol, option.label)
+    chartOutput = ""
+    if (isPrefetch === true) {
+      chartPrefetch = true
+      prefetchChartKey = key
+    } else {
+      chartPrefetch = false
+      prefetchChartKey = ""
+      requestedChartKey = key
       chartPoints = []
       chartStatus = "loading"
       chartErrorMessage = ""
     }
-    chartOutput = ""
     chartProc.command = [backendBinary, "chart", "--symbol", symbol, "--range", option.range, "--interval", option.interval]
     chartProc.running = true
     chartWatchdog.restart()
   }
 
   function refreshChart(force) {
-    if (editing || activeSymbol === "" || chartProc.running) return
+    if (editing || activeSymbol === "") return
     var key = chartKey()
     if (!force) {
       var cached = cacheGet(key)
@@ -386,19 +402,26 @@ Panel {
       if (chartStatus === "ready" && requestedChartKey === key) return
     }
 
+    if (chartProc.running) {
+      if (chartPrefetch) cancelPrefetchIfRunning()
+      else return
+    }
+
     startChartFetch(activeSymbol, selectedIntervalLabel, false)
   }
 
   function applyChart(raw) {
     var parsed = Model.parseChartLine(raw)
-    var key = requestedChartKey
     var status = parsed.state === "ok" ? "ready" : "error"
-    cachePut(key, parsed.points, status, parsed.message || "")
     if (chartPrefetch) {
+      var prefetchKey = prefetchChartKey
+      cachePut(prefetchKey, parsed.points, status, parsed.message || "")
       chartPrefetch = false
+      prefetchChartKey = ""
       Qt.callLater(pumpPrefetch)
       return
     }
+    cachePut(requestedChartKey, parsed.points, status, parsed.message || "")
     chartPoints = parsed.points
     chartStatus = status
     chartErrorMessage = parsed.message || ""
@@ -418,7 +441,7 @@ Panel {
   }
 
   onActiveSymbolChanged: {
-    if (chartPrefetch) return
+    cancelPrefetchIfRunning()
     var cached = cacheGet(chartKey())
     if (cached) {
       chartPoints = cached.points
@@ -446,9 +469,13 @@ Panel {
     }
     onExited: function(exitCode) {
       chartWatchdog.stop()
-      if (!root.chartPrefetch && root.requestedChartKey !== root.chartKey()) {
+      if (root.chartPrefetch) {
+        root.applyChart(root.chartOutput)
         root.chartOutput = ""
-        root.chartPrefetch = false
+        return
+      }
+      if (root.requestedChartKey !== root.chartKey()) {
+        root.chartOutput = ""
         if (root.opened && !root.editing && root.activeSymbol !== "") Qt.callLater(function() { root.refreshChart(true) })
         return
       }
@@ -480,6 +507,7 @@ Panel {
       if (root.chartPrefetch) {
         chartProc.running = false
         root.chartPrefetch = false
+        root.prefetchChartKey = ""
         Qt.callLater(root.pumpPrefetch)
         return
       }

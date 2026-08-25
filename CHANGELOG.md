@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Positive moves render in a soft green on the bar and chart (negatives stay
+  on the theme urgent/red `bar.active` color).
+
+### Fixed
+
+- Stale bar tooltips refresh their relative age while quotes remain stale.
+- Chart prefetch yields to foreground symbol/interval requests and no longer
+  overwrites `requestedChartKey`.
+- Shared serve daemon takes a real exclusive flock, assigns unique client IDs,
+  bounds inbound drain, and buffers nonblocking writes under backpressure.
+- Search display names ignore blank `shortname` values before falling back to
+  `longname`.
+
 ## [2.1.0] - 2026-08-25
 
 ### Added

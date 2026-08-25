@@ -41,10 +41,11 @@ In the chart panel:
 - Click an interval or press `Left`/`Right` (or `H`/`L`) to switch between
   5Y, 1Y, YTD, 6M, 1M, 5D, and 1D (the last choice is remembered).
 - Press `Escape` to close.
-- Right-click the widget to edit the watchlist: add symbols in the field at
-  the bottom (space-separated works too; suggestions appear as you type),
-  rename rows inline, reorder with ▲/▼, and remove entries with the `✕`
-  button. Save commits whatever is typed in the add field.
+
+Right-click the widget to edit the watchlist: add symbols in the field at
+the bottom (space-separated works too; suggestions appear as you type),
+rename rows inline, reorder with ▲/▼, and remove entries with the `✕`
+button. Save commits whatever is typed in the add field.
 
 Each widget instance keeps its own watchlist, so multiple instances can track
 different markets. Enable extra instances with
@@ -80,7 +81,7 @@ symbol, staggered so requests are spread out.
   owns the watchlist editor. All data collection stays in Rust; the QML is
   pure presentation.
 
-```
+```text
 omastonk-qs watch ──(JSON lines)──▶ BarWidget ─▶ Panel
 omastonk-qs chart ──(JSON line)───▶ Panel
 omastonk-qs search ─(JSON line)───▶ Panel editor

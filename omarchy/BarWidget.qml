@@ -35,6 +35,8 @@ BarWidget {
   property string watchArgs: ""
   property real lastQuoteAt: 0
   property bool quotesStale: false
+  // Bumped by staleTimer so staleHint can recompute relative age while stale.
+  property int staleTick: 0
 
   readonly property var symbols: normalizeSymbols(settingsSymbols())
   readonly property string savedActive: normalizeSymbol(setting("activeSymbol", ""))
@@ -45,11 +47,22 @@ BarWidget {
   readonly property var activeQuote: quotes[displaySymbol] || null
   readonly property bool quoteReady: activeQuote !== null && activeQuote.status === "ready" && isFinite(activeQuote.price)
   readonly property bool priceDown: quoteReady && activeQuote.change < 0
+  readonly property bool priceUp: quoteReady && activeQuote.change > 0
+  // Soft green for gains; darken slightly when bar text is already light so
+  // light themes stay readable. Downs keep Color.bar.active (urgent/red).
+  readonly property color upColor: {
+    var base = Qt.color("#6a9f72")
+    var text = Color.bar.text
+    var lum = text.r * 0.2126 + text.g * 0.7152 + text.b * 0.0722
+    return lum > 0.65 ? Qt.darker(base, 1.35) : base
+  }
+  readonly property color quoteForeground: priceUp ? upColor : Color.bar.text
   readonly property string labelText: labelForSymbol(displaySymbol)
   readonly property string errorHint: activeQuote !== null && activeQuote.status === "error" && activeQuote.message !== ""
     ? displaySymbol + ": " + activeQuote.message
     : ""
   readonly property string staleHint: {
+    var _tick = staleTick
     if (symbols.length === 0) return ""
     if (lastQuoteAt <= 0) return quotesStale ? "Waiting for quotes" : ""
     if (!quotesStale) return ""
@@ -466,7 +479,10 @@ BarWidget {
     interval: 5000
     repeat: true
     running: root.symbols.length > 0
-    onTriggered: root.refreshStale()
+    onTriggered: {
+      root.refreshStale()
+      root.staleTick += 1
+    }
   }
 
   Timer {
@@ -499,7 +515,7 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: root.labelText
-    foreground: Color.bar.text
+    foreground: root.quoteForeground
     activeColor: Color.bar.active
     active: root.priceDown
     dimmed: root.quotesStale
