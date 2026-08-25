@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::quotes::{self, SymbolState, MAX_SYMBOLS};
+use crate::quotes::{self, MAX_SYMBOLS, SymbolState};
 
 const GRACE: Duration = Duration::from_secs(2);
 const SLICE: Duration = Duration::from_millis(50);
@@ -215,9 +215,7 @@ fn read_subscribe(stream: &UnixStream) -> Result<Client, String> {
     let reader_stream = stream.try_clone().map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(reader_stream);
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|e| e.to_string())?;
+    reader.read_line(&mut line).map_err(|e| e.to_string())?;
     let _ = stream.set_nonblocking(true);
     let _ = stream.set_read_timeout(None);
 
@@ -284,10 +282,12 @@ fn poll_loop(registry: Arc<Mutex<Registry>>, running: Arc<AtomicBool>) {
         // Drop state for symbols that left the union.
         states.retain(|symbol, _| symbols.iter().any(|s| s == symbol));
         for symbol in &symbols {
-            states.entry(symbol.clone()).or_insert_with(|| SymbolState::Error {
-                symbol: symbol.clone(),
-                message: "loading".into(),
-            });
+            states
+                .entry(symbol.clone())
+                .or_insert_with(|| SymbolState::Error {
+                    symbol: symbol.clone(),
+                    message: "loading".into(),
+                });
         }
 
         if Instant::now() >= next_tick {
