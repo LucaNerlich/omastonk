@@ -41,9 +41,7 @@ BarWidget {
   readonly property var activeQuote: quotes[displaySymbol] || null
   readonly property bool quoteReady: activeQuote !== null && activeQuote.status === "ready" && isFinite(activeQuote.price)
   readonly property bool priceDown: quoteReady && activeQuote.change < 0
-  readonly property string trendGlyph: quoteReady ? (priceDown ? "\u25BC" : "\u25B2") : ""
-  readonly property string priceText: quoteReady ? Model.formatPrice(activeQuote.price) : (activeQuote !== null && activeQuote.status === "loading" ? "..." : "?")
-  readonly property string labelText: displaySymbol === "" ? "$" : displaySymbol + " " + priceText + (trendGlyph === "" ? "" : " " + trendGlyph)
+  readonly property string labelText: labelForSymbol(displaySymbol)
   readonly property string errorHint: activeQuote !== null && activeQuote.status === "error" && activeQuote.message !== ""
     ? displaySymbol + ": " + activeQuote.message
     : ""
@@ -53,6 +51,19 @@ BarWidget {
   // bindings, so every function a binding depends on must live here.
   function normalizeSymbol(value) {
     return String(value || "").trim().toUpperCase().replace(/\s+/g, "")
+  }
+
+  // Same format as the visible bar label, for any watchlist symbol. Used by
+  // the offscreen sizer so rotation reserves the widest label up front.
+  function labelForSymbol(symbol) {
+    var name = normalizeSymbol(symbol)
+    if (name === "") return "$"
+    var quote = quotes[name] || null
+    var ready = quote !== null && quote.status === "ready" && isFinite(quote.price)
+    var price = ready ? Model.formatPrice(quote.price)
+      : (quote !== null && quote.status === "loading" ? "..." : "?")
+    var glyph = ready ? (quote.change < 0 ? "\u25BC" : "\u25B2") : ""
+    return name + " " + price + (glyph === "" ? "" : " " + glyph)
   }
 
   // Injected settings hold QML lists, which Array.isArray rejects.
@@ -316,7 +327,10 @@ BarWidget {
     if (panelLoader.item && typeof panelLoader.item.openEditor === "function") panelLoader.item.openEditor()
   }
 
-  implicitWidth: button.implicitWidth
+  // Size to the widest watchlist label so rotating AAPL ↔ BTC-USD does not
+  // jump the bar slot. Column implicitWidth is max(children), matching the
+  // panel's offscreen sizer pattern.
+  implicitWidth: Math.max(button.implicitWidth, labelSizer.implicitWidth)
   implicitHeight: button.implicitHeight
 
   onBarChanged: injectPanel()
@@ -327,6 +341,28 @@ BarWidget {
 
     seedQuotes()
     restartWatch()
+  }
+
+  Column {
+    id: labelSizer
+    opacity: 0
+    height: 0
+    enabled: false
+
+    Repeater {
+      model: root.symbols.length > 0 ? root.symbols : [""]
+
+      WidgetButton {
+        required property var modelData
+
+        bar: root.bar
+        text: root.labelForSymbol(modelData)
+        foreground: Color.bar.text
+        activeColor: Color.bar.active
+        horizontalMargin: 8.5
+        verticalPadding: 6
+      }
+    }
   }
 
   Component.onCompleted: {
