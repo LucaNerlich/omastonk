@@ -572,6 +572,7 @@ Panel {
     height: 0
     enabled: false
     text: root.intervalChangeText
+    textFormat: Text.PlainText
     font.family: root.fontFamily
     font.pixelSize: Style.font.body
   }
@@ -620,6 +621,7 @@ Panel {
             width: Math.min(implicitWidth, Math.max(1, parent.width - priceLabel.implicitWidth - parent.spacing))
             height: parent.height
             text: root.activeSymbol
+            textFormat: Text.PlainText
             color: root.chartColor
             font.family: root.fontFamily
             font.pixelSize: Style.font.title
@@ -637,6 +639,7 @@ Panel {
             id: priceLabel
             height: parent.height
             text: root.intervalChangeText
+            textFormat: Text.PlainText
             color: root.chartColor
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -717,6 +720,7 @@ Panel {
             width: parent.width - Style.space(16)
             visible: root.chartStatusText !== ""
             text: root.chartStatusText
+            textFormat: Text.PlainText
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
